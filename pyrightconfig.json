@@ -1,0 +1,12 @@
+{
+    "include": [
+        "python"
+    ],
+    "exclude": [],
+    "venvPath": ".",
+    "venv": ".venv",
+    "reportMissingImports": true,
+    "reportMissingTypeStubs": false,
+    "pythonVersion": "3.14",
+    "typeCheckingMode": "strict"
+}

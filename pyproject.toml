@@ -1,0 +1,19 @@
+[project]
+name = "llmark"
+version = "0.1.0"
+requires-python = ">=3.14"
+
+[project.scripts]
+llmark = "llmark.cli:main"
+
+[build-system]
+requires = ["maturin>=1.14.1"]
+build-backend = "maturin"
+
+[tool.maturin]
+module-name = "llmark._native"
+python-source = "python"
+features = ["pyo3/extension-module"]
+
+[dependency-groups]
+dev = ["maturin>=1.14.1"]

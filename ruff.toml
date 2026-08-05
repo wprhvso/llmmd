@@ -1,0 +1,31 @@
+include = ["python/**/*.py"]
+
+lint.extend-select = ["ALL"]
+
+lint.ignore = [
+    "ASYNC109", # async function with timeout
+    "C901",     # complex structure
+    "BLE001",   # blind except
+    "D",        # documentation
+    "E501",     # line too long
+    "EM101",    # string literals in exception call
+    "FBT001",   # boolean positional argument in function definition
+    "FBT002",   # boolean default argument in function definition
+    "FBT003",   # boolean positional argument in function call
+    "PLC0415",  # imports should be at top level
+    "PLR0911",  # too many return statements
+    "PLR0912",  # too many branches
+    "PLR0913",  # too many arguments
+    "PLR0915",  # too many statements
+    "PLR2004",  # magic value
+    "SLF001",   # private member accessed
+    "TRY301",   # raise to an inner function
+    "COM812",   # `ruff format` warning
+    "TC001",    # if TYPE_CHECKING == True:
+    "TC002",    # if TYPE_CHECKING == True:
+    "TC003",    # if TYPE_CHECKING == True:
+    "B008",     # function call in argument defaults
+]
+
+[lint.flake8-annotations]
+suppress-dummy-args = true
