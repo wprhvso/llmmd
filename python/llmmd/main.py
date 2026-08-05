@@ -1,4 +1,4 @@
-from llmark.cli import main
+from llmmd.cli import main
 
 if __name__ == "__main__":
     raise SystemExit(main())

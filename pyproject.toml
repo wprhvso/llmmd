@@ -1,17 +1,17 @@
 [project]
-name = "llmark"
-version = "0.1.4"
+name = "llmmd"
+version = "0.1.5"
 requires-python = ">=3.14"
 
 [project.scripts]
-llmark = "llmark.cli:main"
+llmmd = "llmmd.cli:main"
 
 [build-system]
 requires = ["maturin>=1.14.1"]
 build-backend = "maturin"
 
 [tool.maturin]
-module-name = "llmark._native"
+module-name = "llmmd._native"
 python-source = "python"
 features = ["pyo3/extension-module"]
 

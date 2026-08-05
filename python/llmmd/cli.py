@@ -3,11 +3,11 @@ import json
 import sys
 from pathlib import Path
 
-from llmark import process_markdown
+from llmmd import process_markdown
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(prog="llmark")
+    parser = argparse.ArgumentParser(prog="llmmd")
     parser.add_argument("path", type=Path, nargs="?")
     parser.add_argument("--with-photo", action="store_true")
     args = parser.parse_args()

@@ -1,6 +1,6 @@
 [package]
-name = "llmark"
-version = "0.1.4"
+name = "llmmd"
+version = "0.1.5"
 edition = "2024"
 
 [lib]
