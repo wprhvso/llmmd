@@ -906,6 +906,25 @@ impl LlmMarkdownParser {
     pub fn end(&mut self) -> ChunkResult {
         let mut actions = Vec::new();
 
+        if matches!(
+            self.state,
+            State::CheckingStar { .. }
+                | State::CheckingTilde { .. }
+                | State::CheckingPipe { .. }
+                | State::CheckingDollar
+                | State::VerifyInlineMathDollarEnd
+                | State::CheckingSlash
+                | State::CheckingBang
+                | State::CheckingHtmlTag { .. }
+                | State::CheckingLinkUrl { .. }
+                | State::ReadingLinkUrl { .. }
+        ) {
+            self.push_char('\n', &mut actions);
+            if self.buffer.ends_with('\n') {
+                let _ = self.buffer.pop();
+            }
+        }
+
         if let PrefixState::CheckingThematicBreak { count, .. } = self.prefix_state
             && count >= 3
         {

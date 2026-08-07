@@ -1,5 +1,6 @@
 use comfy_table::{Table, presets::UTF8_FULL};
 use serde::{Deserialize, Serialize};
+
 use crate::from_markdown::{Action, Event, LlmMarkdownParser, TaskStatus};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
