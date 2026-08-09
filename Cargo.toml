@@ -2,6 +2,9 @@
 name = "llmmd"
 version = "0.1.6"
 edition = "2024"
+description = "Convert LLM-authored Markdown into Telegram message text and entities"
+# Distributed as a Python wheel built by maturin, never to crates.io.
+publish = false
 
 [lib]
 name = "_native"

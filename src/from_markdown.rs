@@ -15,7 +15,7 @@ pub enum Event {
     HeadingEnd,
     BlockquoteStart,
     BlockquoteEnd,
-    ListStart { ordered: bool },
+    ListStart { ordered: bool, start: u64 },
     ListEnd,
     ListItemStart { task_status: TaskStatus },
     ListItemEnd,
@@ -81,7 +81,9 @@ enum State {
         opening_count: u8,
         current_count: u8,
     },
-    CheckingDollar,
+    CheckingDollar {
+        char_before: char,
+    },
     CheckingSlash,
     VerifyInlineMathDollarEnd,
     InsideDisplayMathDollar,
@@ -136,6 +138,7 @@ enum PrefixState {
     StrictScan {
         quotes_stripped: u8,
         space_allowed: bool,
+        indent_stripped: u8,
     },
     CheckingThematicBreak {
         marker: char,
@@ -165,6 +168,20 @@ enum SpeculationKind {
     ImageLabel,
 }
 
+/// Longest `<...>` run still considered a potential inline HTML tag.
+const MAX_HTML_TAG_LEN: usize = 10;
+
+/// Maximum nesting depth for the recursive inline re-parse performed when a
+/// speculative construct resolves. Deeper nesting degrades to plain text.
+const INLINE_RECURSION_LIMIT: u16 = 32;
+
+/// Re-parsing is quadratic-to-exponential on adversarially nested markup, so the
+/// total number of characters that may be re-parsed is capped. The allowance grows
+/// with the input (this many characters per input character) so ordinary documents
+/// never reach it, while `[[[[...x](u)](u)...` degrades to plain text instead of
+/// running for hours.
+const INLINE_REPARSE_BUDGET_PER_CHAR: usize = 8;
+
 #[derive(Debug, Clone)]
 struct Speculation {
     kind: SpeculationKind,
@@ -188,6 +205,7 @@ pub struct LlmMarkdownParser {
     found_thematic_break: bool,
     inline_only: bool,
     current_task_status: TaskStatus,
+    current_list_start: u64,
     global_event_counter: usize,
     speculations: Vec<Speculation>,
     current_line_raw: String,
@@ -195,6 +213,10 @@ pub struct LlmMarkdownParser {
     current_line_event_index: usize,
     last_line_event_index: usize,
     in_table: bool,
+    skip_math_newline: bool,
+    block_floor: usize,
+    depth: u16,
+    reparse_budget: usize,
 }
 
 impl Default for LlmMarkdownParser {
@@ -220,6 +242,7 @@ impl LlmMarkdownParser {
             found_thematic_break: false,
             inline_only: false,
             current_task_status: TaskStatus::None,
+            current_list_start: 1,
             global_event_counter: 0,
             speculations: Vec::new(),
             current_line_raw: String::new(),
@@ -227,16 +250,118 @@ impl LlmMarkdownParser {
             current_line_event_index: 0,
             last_line_event_index: 0,
             in_table: false,
+            skip_math_newline: false,
+            block_floor: 0,
+            depth: INLINE_RECURSION_LIMIT,
+            reparse_budget: 0,
         }
     }
 
-    fn push_event(&mut self, event: Event, out: &mut Vec<Action>) {
+    /// Block-level events delimit the region a speculation may span.
+    const fn is_block_event(event: &Event) -> bool {
+        matches!(
+            event,
+            Event::CodeBlockStart(_)
+                | Event::CodeBlockEnd
+                | Event::DisplayMathStart { .. }
+                | Event::DisplayMathEnd { .. }
+                | Event::HeadingStart { .. }
+                | Event::HeadingEnd
+                | Event::BlockquoteStart
+                | Event::BlockquoteEnd
+                | Event::ListStart { .. }
+                | Event::ListEnd
+                | Event::ListItemStart { .. }
+                | Event::ListItemEnd
+                | Event::TableStart
+                | Event::TableEnd
+                | Event::TableRowStart
+                | Event::TableRowEnd
+                | Event::TableCellStart { .. }
+                | Event::TableCellEnd
+                | Event::ThematicBreak
+        )
+    }
+
+    /// Columns of indentation the currently open list containers account for.
+    fn list_indent(&self) -> u8 {
+        let levels = self
+            .open_containers
+            .iter()
+            .filter(|&&container| matches!(container, Container::List { .. }))
+            .count();
+        u8::try_from(levels.saturating_mul(2)).unwrap_or(u8::MAX)
+    }
+
+    /// Indentation implies nesting inside the containers that are already open.
+    /// `line_containers` may already hold the containers an explicit prefix (`>`)
+    /// re-stated on this line, so inheritance continues from there rather than
+    /// being skipped entirely.
+    fn inherit_indented_parents(&mut self) {
+        let base = self.line_containers.len();
+        let levels = usize::from(self.current_indent / 2);
+        let keep = base.saturating_add(levels).min(self.open_containers.len());
+        for index in base..keep {
+            if let Some(&container) = self.open_containers.get(index) {
+                self.line_containers.push(container);
+            }
+        }
+    }
+
+    /// `-`, `_` and `*` make a thematic break; `+` is only ever a bullet marker.
+    const fn is_thematic_marker(marker: char) -> bool {
+        matches!(marker, '-' | '_' | '*')
+    }
+
+    /// Events belonging to a table's own structure.
+    const fn is_table_event(event: &Event) -> bool {
+        matches!(
+            event,
+            Event::TableStart
+                | Event::TableEnd
+                | Event::TableRowStart
+                | Event::TableRowEnd
+                | Event::TableCellStart { .. }
+                | Event::TableCellEnd
+        )
+    }
+
+    fn emit(&mut self, event: Event, out: &mut Vec<Action>) {
         self.global_event_counter = self.global_event_counter.saturating_add(1);
         out.push(Action::Emit(event));
     }
 
+    fn push_event(&mut self, event: Event, out: &mut Vec<Action>) {
+        if Self::is_block_event(&event) {
+            // An inline construct never spans a block boundary. Letting a pending
+            // speculation resolve across one would roll the block events emitted in
+            // between right back out of the stream, leaving unbalanced containers.
+            self.speculations.clear();
+
+            // Neither does a table: anything else block-level ends it, so the two
+            // never interleave into `<table><pre></table></pre>` nonsense.
+            if self.in_table && !Self::is_table_event(&event) {
+                self.in_table = false;
+                self.emit(Event::TableEnd, out);
+                self.current_line_event_index = self.global_event_counter;
+                self.block_floor = self.global_event_counter;
+            }
+            self.emit(event, out);
+            // Nothing may be rolled back past a block event.
+            self.block_floor = self.global_event_counter;
+            return;
+        }
+        self.emit(event, out);
+    }
+
     fn push_rollback(&mut self, count: usize, out: &mut Vec<Action>) {
         self.global_event_counter = self.global_event_counter.saturating_sub(count);
+        // The line markers index into the same stream; a rollback past them would
+        // leave them pointing at events that no longer exist.
+        self.current_line_event_index =
+            self.current_line_event_index.min(self.global_event_counter);
+        self.last_line_event_index = self.last_line_event_index.min(self.global_event_counter);
+        self.block_floor = self.block_floor.min(self.global_event_counter);
         out.push(Action::Rollback(count));
     }
 
@@ -317,7 +442,7 @@ impl LlmMarkdownParser {
                         },
                         out,
                     );
-                    let inner_actions = Self::parse_inline(&label);
+                    let inner_actions = self.parse_inline(&label);
                     for ev in inner_actions {
                         self.push_event(ev, out);
                     }
@@ -330,7 +455,7 @@ impl LlmMarkdownParser {
                         },
                         out,
                     );
-                    let inner_actions = Self::parse_inline(&label);
+                    let inner_actions = self.parse_inline(&label);
                     for ev in inner_actions {
                         self.push_event(ev, out);
                     }
@@ -392,7 +517,7 @@ impl LlmMarkdownParser {
                 SpeculationKind::BoldItalic => {
                     self.push_event(Event::BoldStart, out);
                     self.push_event(Event::ItalicStart, out);
-                    let inner_actions = Self::parse_inline(&content_str);
+                    let inner_actions = self.parse_inline(&content_str);
                     for ev in inner_actions {
                         self.push_event(ev, out);
                     }
@@ -403,20 +528,18 @@ impl LlmMarkdownParser {
                     let (start_ev, end_ev) = match kind {
                         SpeculationKind::Bold => (Event::BoldStart, Event::BoldEnd),
                         SpeculationKind::Italic => (Event::ItalicStart, Event::ItalicEnd),
-                        SpeculationKind::Strikethrough => {
-                            (Event::StrikethroughStart, Event::StrikethroughEnd)
-                        }
+                        SpeculationKind::Strikethrough =>
+                            (Event::StrikethroughStart, Event::StrikethroughEnd),
                         SpeculationKind::Spoiler => (Event::SpoilerStart, Event::SpoilerEnd),
                         SpeculationKind::Underline => (Event::UnderlineStart, Event::UnderlineEnd),
-                        SpeculationKind::Superscript => {
-                            (Event::SuperscriptStart, Event::SuperscriptEnd)
-                        }
+                        SpeculationKind::Superscript =>
+                            (Event::SuperscriptStart, Event::SuperscriptEnd),
                         SpeculationKind::Subscript => (Event::SubscriptStart, Event::SubscriptEnd),
                         _ => unreachable!(),
                     };
 
                     self.push_event(start_ev, out);
-                    let inner_actions = Self::parse_inline(&content_str);
+                    let inner_actions = self.parse_inline(&content_str);
                     for ev in inner_actions {
                         self.push_event(ev, out);
                     }
@@ -440,33 +563,90 @@ impl LlmMarkdownParser {
         !s.is_empty() && s.contains('|')
     }
 
-    fn parse_inline(text: &str) -> Vec<Event> {
-        let mut p = Self::new();
-        p.prefix_state = PrefixState::Done;
-        p.inline_only = true;
-        let mut res = p.push_chunk(text);
-        res.actions.extend(p.end().actions);
-        res.actions
-            .into_iter()
-            .filter_map(|a| match a {
-                Action::Emit(e) => Some(e),
-                Action::Rollback(_) => None,
-            })
-            .collect()
+    /// Re-parses already captured raw source text as inline content.
+    ///
+    /// `Rollback` actions must be *applied* here, not discarded: the inner parse
+    /// speculatively emits the literal delimiters as text and then rolls them back
+    /// once the construct resolves. Dropping the rollbacks would leave both the
+    /// literal and the resolved form in the stream.
+    ///
+    /// Re-parsing is recursive (a bold span may contain a link whose label contains
+    /// code, ...), so the remaining budget is carried in `depth` and pathological
+    /// input degrades to plain text instead of overflowing the stack.
+    fn parse_inline(&mut self, text: &str) -> Vec<Event> {
+        if text.is_empty() {
+            return Vec::new();
+        }
+        if self.depth == 0 || self.reparse_budget < text.len() {
+            return vec![Event::Text(text.to_string())];
+        }
+        self.reparse_budget = self.reparse_budget.saturating_sub(text.len());
+
+        let mut inner = Self::new();
+        inner.prefix_state = PrefixState::Done;
+        inner.inline_only = true;
+        inner.depth = self.depth.saturating_sub(1);
+        inner.reparse_budget = self.reparse_budget;
+
+        let mut actions = inner.push_chunk(text).actions;
+        actions.extend(inner.end().actions);
+        // Whatever the nested parse spent is spent for everyone.
+        self.reparse_budget = inner.reparse_budget;
+
+        let mut events = Vec::new();
+        for action in actions {
+            match action {
+                Action::Emit(event) => events.push(event),
+                Action::Rollback(count) => {
+                    let new_len = events.len().saturating_sub(count);
+                    events.truncate(new_len);
+                }
+            }
+        }
+        events
+    }
+
+    /// Splits a table row on its unescaped `|`, unescaping `\|` into a literal pipe.
+    fn split_row_cells(row: &str) -> Vec<String> {
+        let mut cells = Vec::new();
+        let mut cell = String::new();
+        let mut escaped = false;
+
+        for character in row.chars() {
+            if escaped {
+                if character != '|' {
+                    cell.push('\\');
+                }
+                cell.push(character);
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '|' {
+                cells.push(std::mem::take(&mut cell));
+            } else {
+                cell.push(character);
+            }
+        }
+        if escaped {
+            cell.push('\\');
+        }
+        cells.push(cell);
+
+        // A row is usually fenced by pipes; those produce empty outer cells.
+        if cells.first().is_some_and(|first| first.trim().is_empty()) && cells.len() > 1 {
+            cells.remove(0);
+        }
+        if cells.last().is_some_and(|last| last.trim().is_empty()) && cells.len() > 1 {
+            cells.pop();
+        }
+        cells
     }
 
     fn emit_parsed_table_row(&mut self, row: &str, is_header: bool, out: &mut Vec<Action>) {
         self.push_event(Event::TableRowStart, out);
-        let mut row = row.trim();
-        if row.starts_with('|') {
-            row = &row[1..];
-        }
-        if row.ends_with('|') {
-            row = &row[..row.len().saturating_sub(1)];
-        }
-        for cell in row.split('|') {
+        for cell in Self::split_row_cells(row.trim()) {
             self.push_event(Event::TableCellStart { is_header }, out);
-            let cell_events = Self::parse_inline(cell);
+            let cell_events = self.parse_inline(&cell);
             for ev in cell_events {
                 self.push_event(ev, out);
             }
@@ -478,6 +658,14 @@ impl LlmMarkdownParser {
     #[allow(clippy::too_many_lines)]
     pub fn push_chunk(&mut self, chunk: &str) -> ChunkResult {
         let mut actions = Vec::new();
+
+        if !self.inline_only {
+            // Only the top-level parser is fed real input; nested parsers inherit a
+            // slice of the same allowance instead of minting their own.
+            self.reparse_budget = self
+                .reparse_budget
+                .saturating_add(chunk.len().saturating_mul(INLINE_REPARSE_BUDGET_PER_CHAR));
+        }
 
         for c in chunk.chars() {
             let mut process_as_text = false;
@@ -499,6 +687,7 @@ impl LlmMarkdownParser {
                     PrefixState::StrictScan {
                         quotes_stripped,
                         space_allowed,
+                        indent_stripped,
                     } => {
                         let expected = u8::try_from(
                             self.open_containers
@@ -512,15 +701,27 @@ impl LlmMarkdownParser {
                             self.prefix_state = PrefixState::StrictScan {
                                 quotes_stripped: quotes_stripped.saturating_add(1),
                                 space_allowed: true,
+                                indent_stripped,
                             };
                             continue;
                         } else if (c == ' ' || c == '\t') && space_allowed {
                             self.prefix_state = PrefixState::StrictScan {
                                 quotes_stripped,
                                 space_allowed: false,
+                                indent_stripped,
                             };
                             continue;
                         } else if (c == ' ' || c == '\t') && quotes_stripped < expected {
+                            continue;
+                        } else if (c == ' ' || c == '\t') && indent_stripped < self.list_indent() {
+                            // A fenced block inside a list is written at the item's
+                            // indentation; that indentation is structure, not code.
+                            let width = if c == '\t' { 4 } else { 1 };
+                            self.prefix_state = PrefixState::StrictScan {
+                                quotes_stripped,
+                                space_allowed,
+                                indent_stripped: indent_stripped.saturating_add(width),
+                            };
                             continue;
                         }
                         self.prefix_state = PrefixState::Done;
@@ -533,13 +734,7 @@ impl LlmMarkdownParser {
                             self.current_indent = self.current_indent.saturating_add(4);
                             continue;
                         } else if c == '>' {
-                            if self.line_containers.is_empty() {
-                                let parent_levels = usize::from(self.current_indent / 2);
-                                let keep = parent_levels.min(self.open_containers.len());
-                                for &container in self.open_containers.iter().take(keep) {
-                                    self.line_containers.push(container);
-                                }
-                            }
+                            self.inherit_indented_parents();
                             self.line_containers.push(Container::Blockquote);
                             self.current_indent = 0;
                             continue;
@@ -579,7 +774,7 @@ impl LlmMarkdownParser {
                         }
                         self.prefix_state = PrefixState::Done;
                     }
-                    PrefixState::CheckingThematicBreak { marker, count } => {
+                    PrefixState::CheckingThematicBreak { marker, count } =>
                         if c == marker {
                             self.prefix_buffer.push(c);
                             self.prefix_state = PrefixState::CheckingThematicBreak {
@@ -591,7 +786,7 @@ impl LlmMarkdownParser {
                             self.prefix_buffer.push(c);
                             continue;
                         } else if c == '\n' {
-                            if count >= 3 {
+                            if count >= 3 && Self::is_thematic_marker(marker) {
                                 self.found_thematic_break = true;
                                 self.prefix_buffer.clear();
                             }
@@ -600,13 +795,7 @@ impl LlmMarkdownParser {
                             && (marker == '-' || marker == '*' || marker == '+')
                             && self.prefix_buffer.ends_with(|ch: char| ch.is_whitespace())
                         {
-                            if self.line_containers.is_empty() {
-                                let parent_levels = usize::from(self.current_indent / 2);
-                                let keep = parent_levels.min(self.open_containers.len());
-                                for &container in self.open_containers.iter().take(keep) {
-                                    self.line_containers.push(container);
-                                }
-                            }
+                            self.inherit_indented_parents();
                             self.line_containers
                                 .push(Container::List { ordered: false });
                             self.explicit_list_marker = true;
@@ -625,8 +814,7 @@ impl LlmMarkdownParser {
                             self.prefix_state = PrefixState::Done;
                         } else {
                             self.prefix_state = PrefixState::Done;
-                        }
-                    }
+                        },
                     PrefixState::ReadDigits => {
                         if c.is_ascii_digit() {
                             self.prefix_buffer.push(c);
@@ -640,15 +828,15 @@ impl LlmMarkdownParser {
                     }
                     PrefixState::CheckDot => {
                         if c == ' ' || c == '\t' {
-                            if self.line_containers.is_empty() {
-                                let parent_levels = usize::from(self.current_indent / 2);
-                                let keep = parent_levels.min(self.open_containers.len());
-                                for &container in self.open_containers.iter().take(keep) {
-                                    self.line_containers.push(container);
-                                }
-                            }
+                            self.inherit_indented_parents();
                             self.line_containers.push(Container::List { ordered: true });
                             self.explicit_list_marker = true;
+                            // `3. item` starts the list at three, not at one.
+                            self.current_list_start = self
+                                .prefix_buffer
+                                .trim_end_matches(['.', ')'])
+                                .parse()
+                                .unwrap_or(1);
                             self.prefix_buffer.clear();
                             self.current_indent = 0;
                             self.prefix_state = PrefixState::CheckingTaskBox {
@@ -659,7 +847,7 @@ impl LlmMarkdownParser {
                         }
                         self.prefix_state = PrefixState::Done;
                     }
-                    PrefixState::CheckingTaskBox { step, status } => {
+                    PrefixState::CheckingTaskBox { step, status } =>
                         if step == 0 {
                             if c == '[' {
                                 self.prefix_buffer.push(c);
@@ -701,8 +889,7 @@ impl LlmMarkdownParser {
                                 continue;
                             }
                             self.prefix_state = PrefixState::Done;
-                        }
-                    }
+                        },
                     PrefixState::Done => unreachable!(),
                 }
 
@@ -720,6 +907,17 @@ impl LlmMarkdownParser {
                         let is_lazy = !self.buffer.is_empty() && c != '\n';
                         if is_lazy || self.current_indent >= 2 {
                             self.line_containers = self.open_containers.clone();
+                        } else if c == '\n' && self.prefix_buffer.is_empty() {
+                            // A blank line does not end a list — `1.` / `2.` separated by
+                            // one keep numbering. It does end a blockquote, so keep only
+                            // the list containers up to the innermost quote.
+                            let keep = self
+                                .open_containers
+                                .iter()
+                                .position(|container| *container == Container::Blockquote)
+                                .unwrap_or(self.open_containers.len());
+                            self.line_containers =
+                                self.open_containers.get(..keep).unwrap_or(&[]).to_vec();
                         }
                     }
 
@@ -751,13 +949,21 @@ impl LlmMarkdownParser {
                     }
 
                     let to_open = self.line_containers.get(common..).unwrap_or(&[]).to_vec();
-                    for container in to_open {
+                    let innermost = to_open.len().saturating_sub(1);
+                    for (index, container) in to_open.into_iter().enumerate() {
                         match container {
                             Container::Blockquote => {
                                 self.push_event(Event::BlockquoteStart, &mut actions);
                             }
                             Container::List { ordered } => {
-                                self.push_event(Event::ListStart { ordered }, &mut actions);
+                                // Only the innermost list is the one this line's marker
+                                // opened; any outer level is a re-opened parent.
+                                let start = if index == innermost {
+                                    self.current_list_start
+                                } else {
+                                    1
+                                };
+                                self.push_event(Event::ListStart { ordered, start }, &mut actions);
                                 self.push_event(
                                     Event::ListItemStart {
                                         task_status: self.current_task_status,
@@ -787,11 +993,21 @@ impl LlmMarkdownParser {
 
                     self.open_containers = self.line_containers.clone();
 
+                    // The container events above belong to the line's *frame*, not its
+                    // content. Table detection rewrites a line's content, so mark where
+                    // that content starts; rolling back past this point would delete the
+                    // enclosing blockquote or list.
+                    self.current_line_event_index = self.global_event_counter;
+
                     if self.found_thematic_break {
                         self.push_event(Event::ThematicBreak, &mut actions);
                     } else {
+                        // These characters looked like a list/break marker but were
+                        // not one. They are ordinary content, so they must also land in
+                        // `current_line_raw` — table detection reads the line from there.
                         let failed = std::mem::take(&mut self.prefix_buffer);
                         for fc in failed.chars() {
+                            self.current_line_raw.push(fc);
                             self.push_char(fc, &mut actions);
                         }
                         process_as_text = true;
@@ -807,6 +1023,13 @@ impl LlmMarkdownParser {
 
             if c == '\n' {
                 self.flush_text(&mut actions);
+
+                // A blank line ends the paragraph. Inline constructs do not span one,
+                // and letting a speculation resolve across it would roll back the text
+                // of the paragraph in between.
+                if !in_strict_block && self.current_line_raw.trim().is_empty() {
+                    self.speculations.clear();
+                }
 
                 let next_in_strict = matches!(
                     self.state,
@@ -830,6 +1053,10 @@ impl LlmMarkdownParser {
                             && Self::is_delimiter_row(&self.current_line_raw)
                             && Self::is_table_row(&self.last_line_raw)
                             && self.state == State::NormalText
+                            // A block boundary between the candidate header row and here
+                            // means the two lines are not one table: rewriting them would
+                            // have to roll back the container events in between.
+                            && self.last_line_event_index >= self.block_floor
                         {
                             let rollback_count = self
                                 .global_event_counter
@@ -862,13 +1089,17 @@ impl LlmMarkdownParser {
                                 }
                                 self.push_event(Event::TableEnd, &mut actions);
 
-                                let text_events = Self::parse_inline(&self.current_line_raw);
+                                let raw_line = self.current_line_raw.clone();
+                                let text_events = self.parse_inline(&raw_line);
                                 for ev in text_events {
                                     self.push_event(ev, &mut actions);
                                 }
                             }
                         }
-                    } else if self.in_table && self.found_thematic_break {
+                    } else if self.in_table && !next_in_strict {
+                        // Anything that stops the table (a thematic break, a container
+                        // change) closes it here rather than letting it swallow the
+                        // following block.
                         self.in_table = false;
                         self.push_event(Event::TableEnd, &mut actions);
                     }
@@ -877,6 +1108,7 @@ impl LlmMarkdownParser {
                         self.prefix_state = PrefixState::StrictScan {
                             quotes_stripped: 0,
                             space_allowed: false,
+                            indent_stripped: 0,
                         };
                     } else {
                         self.prefix_state = PrefixState::Scan;
@@ -886,6 +1118,7 @@ impl LlmMarkdownParser {
                     self.explicit_list_marker = false;
                     self.found_thematic_break = false;
                     self.current_task_status = TaskStatus::None;
+                    self.current_list_start = 1;
                     self.prefix_buffer.clear();
 
                     self.last_line_raw = std::mem::take(&mut self.current_line_raw);
@@ -898,7 +1131,11 @@ impl LlmMarkdownParser {
             }
         }
 
-        self.flush_text(&mut actions);
+        // While reading a fence info string the buffer holds the language, not body
+        // text, so it must survive until the info line is terminated.
+        if !matches!(self.state, State::ReadingCodeInfo { .. }) {
+            self.flush_text(&mut actions);
+        }
         ChunkResult { actions }
     }
 
@@ -906,18 +1143,26 @@ impl LlmMarkdownParser {
     pub fn end(&mut self) -> ChunkResult {
         let mut actions = Vec::new();
 
+        // States that are still "deciding" what they are looking at hold characters
+        // hostage. Feed them a synthetic newline so they commit (resolving a pending
+        // speculation or falling back to literal text) instead of dropping the input,
+        // then remove the synthetic newline again.
         if matches!(
             self.state,
             State::CheckingStar { .. }
                 | State::CheckingTilde { .. }
                 | State::CheckingPipe { .. }
-                | State::CheckingDollar
+                | State::CheckingDollar { .. }
                 | State::VerifyInlineMathDollarEnd
                 | State::CheckingSlash
                 | State::CheckingBang
                 | State::CheckingHtmlTag { .. }
                 | State::CheckingLinkUrl { .. }
                 | State::ReadingLinkUrl { .. }
+                | State::CheckingHeading { .. }
+        ) || matches!(
+            self.state,
+            State::CheckingBackticks { count, is_line_start } if !(is_line_start && count >= 3)
         ) {
             self.push_char('\n', &mut actions);
             if self.buffer.ends_with('\n') {
@@ -925,8 +1170,9 @@ impl LlmMarkdownParser {
             }
         }
 
-        if let PrefixState::CheckingThematicBreak { count, .. } = self.prefix_state
+        if let PrefixState::CheckingThematicBreak { marker, count } = self.prefix_state
             && count >= 3
+            && Self::is_thematic_marker(marker)
         {
             self.found_thematic_break = true;
             self.prefix_buffer.clear();
@@ -946,13 +1192,39 @@ impl LlmMarkdownParser {
                     }
                 }
             }
+            // The containers were closed here; forget them so the final sweep at the
+            // bottom of `end()` does not close them a second time.
+            self.open_containers.truncate(common);
             self.push_event(Event::ThematicBreak, &mut actions);
+        }
+
+        // The info string of an unterminated fence is the language, not body text, so it
+        // must be consumed before the generic flush below turns it into a `Text` event.
+        if matches!(self.state, State::ReadingCodeInfo { .. }) {
+            let language = std::mem::take(&mut self.buffer).trim().to_string();
+            self.push_event(Event::CodeBlockStart(language), &mut actions);
+            self.push_event(Event::CodeBlockEnd, &mut actions);
+            self.state = State::NormalText;
+        }
+
+        // A partial closing fence never became a fence; it is code block content.
+        if let State::CheckingBlockEnd {
+            opening_count,
+            current_count,
+        } = self.state
+            && current_count < opening_count
+        {
+            self.buffer
+                .push_str(&"`".repeat(usize::from(current_count)));
         }
 
         self.flush_text(&mut actions);
 
         if self.in_table {
-            if Self::is_table_row(&self.current_line_raw) {
+            // Only a line the inline machine has fully digested may be rewritten as a
+            // row; rolling back mid-construct would strip events the state still
+            // expects to close.
+            if self.state == State::NormalText && Self::is_table_row(&self.current_line_raw) {
                 let rollback_count = self
                     .global_event_counter
                     .saturating_sub(self.current_line_event_index);
@@ -962,6 +1234,7 @@ impl LlmMarkdownParser {
                 let row = self.current_line_raw.clone();
                 self.emit_parsed_table_row(&row, false, &mut actions);
             }
+            self.in_table = false;
             self.push_event(Event::TableEnd, &mut actions);
         }
 
@@ -970,10 +1243,6 @@ impl LlmMarkdownParser {
                 count,
                 is_line_start,
             } if is_line_start && count >= 3 => {
-                self.push_event(Event::CodeBlockStart(String::new()), &mut actions);
-                self.push_event(Event::CodeBlockEnd, &mut actions);
-            }
-            State::ReadingCodeInfo { .. } => {
                 self.push_event(Event::CodeBlockStart(String::new()), &mut actions);
                 self.push_event(Event::CodeBlockEnd, &mut actions);
             }
@@ -1027,7 +1296,7 @@ impl LlmMarkdownParser {
             let current_state = self.state.clone();
 
             match current_state {
-                State::NormalText => {
+                State::NormalText =>
                     if c == '`' {
                         self.flush_text(out);
                         self.state = State::CheckingBackticks {
@@ -1042,7 +1311,9 @@ impl LlmMarkdownParser {
                         };
                     } else if c == '$' {
                         self.flush_text(out);
-                        self.state = State::CheckingDollar;
+                        self.state = State::CheckingDollar {
+                            char_before: self.last_char,
+                        };
                     } else if c == '\\' {
                         self.flush_text(out);
                         self.state = State::CheckingSlash;
@@ -1097,10 +1368,9 @@ impl LlmMarkdownParser {
                         }
                     } else {
                         self.buffer.push(c);
-                    }
-                }
+                    },
 
-                State::CheckingBang => {
+                State::CheckingBang =>
                     if c == '[' {
                         self.start_speculation(SpeculationKind::ImageLabel);
                         self.buffer.push_str("![");
@@ -1110,10 +1380,9 @@ impl LlmMarkdownParser {
                         self.buffer.push('!');
                         self.state = State::NormalText;
                         reprocess = true;
-                    }
-                }
+                    },
 
-                State::CheckingLinkUrl { kind, spec_idx } => {
+                State::CheckingLinkUrl { kind, spec_idx } =>
                     if c == '(' {
                         self.buffer.push('(');
                         self.flush_text(out);
@@ -1126,8 +1395,7 @@ impl LlmMarkdownParser {
                         self.abort_speculation(spec_idx);
                         self.state = State::NormalText;
                         reprocess = true;
-                    }
-                }
+                    },
 
                 State::ReadingLinkUrl {
                     kind,
@@ -1139,10 +1407,11 @@ impl LlmMarkdownParser {
                         self.resolve_link(spec_idx, &url, kind, out);
                         self.state = State::NormalText;
                     } else if c.is_whitespace() {
-                        self.buffer.push(c);
-                        self.flush_text(out);
+                        // Not a link destination. Let `c` go through the normal text path so
+                        // that a synthetic end-of-input newline can still be trimmed.
                         self.abort_speculation(spec_idx);
                         self.state = State::NormalText;
+                        reprocess = true;
                     } else {
                         url.push(c);
                         self.buffer.push(c);
@@ -1156,6 +1425,16 @@ impl LlmMarkdownParser {
                 }
 
                 State::CheckingHtmlTag { mut tag } => {
+                    if c != '>' && (c.is_whitespace() || tag.len() >= MAX_HTML_TAG_LEN) {
+                        // Not a tag after all. `c` was never appended to `tag`, so it still
+                        // has to be reprocessed as ordinary text.
+                        self.buffer.push_str(&tag);
+                        self.flush_text(out);
+                        self.state = State::NormalText;
+                        reprocess = true;
+                        continue;
+                    }
+
                     tag.push(c);
                     if c == '>' {
                         if tag == "<u>" {
@@ -1204,11 +1483,6 @@ impl LlmMarkdownParser {
                             self.flush_text(out);
                         }
                         self.state = State::NormalText;
-                    } else if c.is_whitespace() || tag.len() > 10 {
-                        self.buffer.push_str(&tag);
-                        self.flush_text(out);
-                        self.state = State::NormalText;
-                        reprocess = true;
                     } else {
                         self.state = State::CheckingHtmlTag { tag };
                     }
@@ -1218,7 +1492,7 @@ impl LlmMarkdownParser {
                     count,
                     char_before,
                     marker,
-                } => {
+                } =>
                     if c == marker {
                         self.state = State::CheckingStar {
                             count: count.saturating_add(1),
@@ -1270,10 +1544,9 @@ impl LlmMarkdownParser {
 
                         self.state = State::NormalText;
                         reprocess = true;
-                    }
-                }
+                    },
 
-                State::CheckingTilde { count, char_before } => {
+                State::CheckingTilde { count, char_before } =>
                     if c == '~' {
                         self.state = State::CheckingTilde {
                             count: count.saturating_add(1),
@@ -1309,10 +1582,9 @@ impl LlmMarkdownParser {
                         }
                         self.state = State::NormalText;
                         reprocess = true;
-                    }
-                }
+                    },
 
-                State::CheckingPipe { count, char_before } => {
+                State::CheckingPipe { count, char_before } =>
                     if c == '|' {
                         self.state = State::CheckingPipe {
                             count: count.saturating_add(1),
@@ -1334,8 +1606,7 @@ impl LlmMarkdownParser {
                         }
                         self.state = State::NormalText;
                         reprocess = true;
-                    }
-                }
+                    },
 
                 State::CheckingBackticks {
                     count,
@@ -1355,6 +1626,10 @@ impl LlmMarkdownParser {
                         let delim = "`".repeat(usize::from(count));
                         let kind = SpeculationKind::Code(count);
                         if self.has_speculation(kind) {
+                            // The closing delimiter has to reach `buffer` first so that any
+                            // enclosing speculation records it in its `raw_content`; without
+                            // it the outer re-parse sees an unbalanced delimiter.
+                            self.buffer.push_str(&delim);
                             self.resolve_speculation(kind, &delim, &delim, out);
                         } else {
                             self.start_speculation(kind);
@@ -1366,7 +1641,7 @@ impl LlmMarkdownParser {
                     }
                 }
 
-                State::CheckingDollar => {
+                State::CheckingDollar { char_before } => {
                     if c == '$' && !self.inline_only {
                         self.push_event(
                             Event::DisplayMathStart {
@@ -1374,9 +1649,12 @@ impl LlmMarkdownParser {
                             },
                             out,
                         );
+                        self.skip_math_newline = true;
                         self.state = State::InsideDisplayMathDollar;
                     } else {
-                        let right_flanking_ok = !self.last_char.is_whitespace();
+                        // A closing `$` must directly follow non-whitespace, otherwise
+                        // `$5 ... $6` style prose would be swallowed as math.
+                        let right_flanking_ok = !char_before.is_whitespace();
                         if right_flanking_ok && self.has_speculation(SpeculationKind::MathDollar) {
                             self.state = State::VerifyInlineMathDollarEnd;
                         } else {
@@ -1392,8 +1670,11 @@ impl LlmMarkdownParser {
                 }
 
                 State::VerifyInlineMathDollarEnd => {
+                    // The closing `$` is part of the raw source either way: an enclosing
+                    // speculation must see it in its `raw_content`.
+                    self.buffer.push('$');
                     if c.is_ascii_digit() {
-                        self.buffer.push('$');
+                        // `$5 ... $6` is money, not math.
                         self.flush_text(out);
                     } else {
                         self.resolve_speculation(SpeculationKind::MathDollar, "$", "$", out);
@@ -1402,7 +1683,7 @@ impl LlmMarkdownParser {
                     reprocess = true;
                 }
 
-                State::CheckingSlash => {
+                State::CheckingSlash =>
                     if c == '[' && !self.inline_only {
                         self.push_event(
                             Event::DisplayMathStart {
@@ -1410,6 +1691,7 @@ impl LlmMarkdownParser {
                             },
                             out,
                         );
+                        self.skip_math_newline = true;
                         self.state = State::InsideDisplayMathBracket;
                     } else if c == '(' {
                         self.start_speculation(SpeculationKind::MathParenthesis);
@@ -1417,6 +1699,7 @@ impl LlmMarkdownParser {
                         self.flush_text(out);
                         self.state = State::NormalText;
                     } else if c == ')' && self.has_speculation(SpeculationKind::MathParenthesis) {
+                        self.buffer.push_str("\\)");
                         self.resolve_speculation(
                             SpeculationKind::MathParenthesis,
                             "\\(",
@@ -1428,13 +1711,12 @@ impl LlmMarkdownParser {
                         self.buffer.push('\\');
                         self.state = State::NormalText;
                         reprocess = true;
-                    }
-                }
+                    },
 
                 State::CheckingHeading {
                     count,
                     is_line_start,
-                } => {
+                } =>
                     if c == '#' {
                         if count < 6 {
                             self.state = State::CheckingHeading {
@@ -1458,10 +1740,9 @@ impl LlmMarkdownParser {
                         self.buffer.push_str(&"#".repeat(usize::from(count)));
                         self.state = State::NormalText;
                         reprocess = true;
-                    }
-                }
+                    },
 
-                State::InsideHeading => {
+                State::InsideHeading =>
                     if c == '\n' {
                         self.flush_text(out);
                         self.push_event(Event::HeadingEnd, out);
@@ -1469,20 +1750,18 @@ impl LlmMarkdownParser {
                         reprocess = true;
                     } else {
                         self.buffer.push(c);
-                    }
-                }
+                    },
 
-                State::ReadingCodeInfo { opening_count } => {
+                State::ReadingCodeInfo { opening_count } =>
                     if c == '\n' {
                         let language = std::mem::take(&mut self.buffer).trim().to_string();
                         self.push_event(Event::CodeBlockStart(language), out);
                         self.state = State::InsideCodeBlock { opening_count };
                     } else {
                         self.buffer.push(c);
-                    }
-                }
+                    },
 
-                State::InsideCodeBlock { opening_count } => {
+                State::InsideCodeBlock { opening_count } =>
                     if self.at_line_start && c == '`' {
                         self.flush_text(out);
                         self.state = State::CheckingBlockEnd {
@@ -1494,13 +1773,12 @@ impl LlmMarkdownParser {
                         if c == '\n' {
                             self.flush_text(out);
                         }
-                    }
-                }
+                    },
 
                 State::CheckingBlockEnd {
                     opening_count,
                     current_count,
-                } => {
+                } =>
                     if c == '`' {
                         self.state = State::CheckingBlockEnd {
                             opening_count,
@@ -1517,19 +1795,20 @@ impl LlmMarkdownParser {
                             self.state = State::InsideCodeBlock { opening_count };
                         }
                         reprocess = true;
-                    }
-                }
+                    },
 
-                State::InsideDisplayMathDollar => {
-                    if c == '$' {
+                State::InsideDisplayMathDollar =>
+                    if std::mem::take(&mut self.skip_math_newline) && c == '\n' {
+                        // The newline that ends the opening `$$` line belongs to the
+                        // delimiter, not to the body of the block.
+                    } else if c == '$' {
                         self.flush_text(out);
                         self.state = State::CheckingDisplayMathDollarEnd;
                     } else {
                         self.buffer.push(c);
-                    }
-                }
+                    },
 
-                State::CheckingDisplayMathDollarEnd => {
+                State::CheckingDisplayMathDollarEnd =>
                     if c == '$' {
                         self.push_event(
                             Event::DisplayMathEnd {
@@ -1542,19 +1821,19 @@ impl LlmMarkdownParser {
                         self.buffer.push('$');
                         self.state = State::InsideDisplayMathDollar;
                         reprocess = true;
-                    }
-                }
+                    },
 
-                State::InsideDisplayMathBracket => {
-                    if c == '\\' {
+                State::InsideDisplayMathBracket =>
+                    if std::mem::take(&mut self.skip_math_newline) && c == '\n' {
+                        // See `InsideDisplayMathDollar`.
+                    } else if c == '\\' {
                         self.flush_text(out);
                         self.state = State::CheckingDisplayMathBracketEnd;
                     } else {
                         self.buffer.push(c);
-                    }
-                }
+                    },
 
-                State::CheckingDisplayMathBracketEnd => {
+                State::CheckingDisplayMathBracketEnd =>
                     if c == ']' {
                         self.push_event(
                             Event::DisplayMathEnd {
@@ -1567,8 +1846,7 @@ impl LlmMarkdownParser {
                         self.buffer.push('\\');
                         self.state = State::InsideDisplayMathBracket;
                         reprocess = true;
-                    }
-                }
+                    },
             }
         }
     }

@@ -12,7 +12,7 @@ base:
     RUN uv python install $PYTHON_VERSION
     COPY --dir .cargo .
     COPY Cargo.toml Cargo.lock rust-toolchain.toml .rustfmt.toml ruff.toml pyrightconfig.json pyproject.toml uv.lock .
-    COPY --dir src python .
+    COPY --dir src python tests tests_python .
     RUN uv sync --locked
 
 fmt:
@@ -25,8 +25,8 @@ clippy:
 
 ruff:
     FROM +base
-    RUN uvx ruff check python
-    RUN uvx ruff format --check python
+    RUN uvx ruff check python tests_python
+    RUN uvx ruff format --check python tests_python
 
 pyright:
     FROM +base
@@ -36,6 +36,11 @@ pyright:
 test:
     FROM +base
     RUN cargo test --all-features
+
+pytest:
+    FROM +base
+    RUN uv run maturin develop --release
+    RUN uv run pytest tests_python
 
 lint:
     BUILD +fmt
@@ -57,5 +62,6 @@ wheel:
 all:
     BUILD +lint
     BUILD +test
+    BUILD +pytest
     BUILD +sdist
     BUILD +wheel
