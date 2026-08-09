@@ -3,8 +3,8 @@ use pyo3::{
     types::{PyDict, PyList},
 };
 
-mod from_markdown;
-mod to_telegram;
+pub mod from_markdown;
+pub mod to_telegram;
 
 use crate::to_telegram::process_llm_markdown_sync;
 

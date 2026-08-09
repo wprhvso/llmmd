@@ -58,13 +58,28 @@ impl BuildState {
     }
 
     fn pop_newline(&mut self) -> bool {
-        if self.text.ends_with('\n') {
-            self.text.pop();
-            self.current_utf16_offset = self.current_utf16_offset.saturating_sub(1);
-            true
-        } else {
-            false
+        if !self.text.ends_with('\n') {
+            return false;
         }
+
+        self.text.pop();
+        self.current_utf16_offset = self.current_utf16_offset.saturating_sub(1);
+
+        // Dropping the newline retroactively shortens the text, so entities that were
+        // already closed over it now reach past the end. Telegram rejects those, so
+        // clamp them (and drop the ones left empty).
+        let limit = i64::try_from(self.current_utf16_offset).unwrap_or(i64::MAX);
+        self.entities.retain_mut(|entity| {
+            if entity.offset.saturating_add(entity.length) > limit {
+                entity.length = limit.saturating_sub(entity.offset);
+            }
+            entity.length > 0
+        });
+        for active in &mut self.active_stack {
+            active.start_utf16_offset = active.start_utf16_offset.min(self.current_utf16_offset);
+        }
+
+        true
     }
 
     fn close_entity(&mut self, expected_type: &str) {
@@ -214,7 +229,7 @@ fn is_block_mappable(events: &[Event], start_idx: usize, is_sup: bool) -> bool {
             | Event::InlineCode(s)
             | Event::HeadingText(s)
             | Event::DisplayMathText(s)
-            | Event::InlineMath { content: s, .. } => {
+            | Event::InlineMath { content: s, .. } =>
                 for c in s.chars() {
                     if is_sup && to_superscript(c).is_none() {
                         return false;
@@ -222,12 +237,61 @@ fn is_block_mappable(events: &[Event], start_idx: usize, is_sup: bool) -> bool {
                     if !is_sup && to_subscript(c).is_none() {
                         return false;
                     }
-                }
-            }
+                },
             _ => {}
         }
     }
     false
+}
+
+/// Which Unicode script an enclosing `<sup>`/`<sub>` maps its text into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Script {
+    Super,
+    Sub,
+}
+
+/// Applies the innermost mappable script, if any, to `text`.
+fn apply_script(scripts: &[Option<Script>], text: &str) -> String {
+    match scripts.iter().rev().find_map(|script| *script) {
+        Some(Script::Super) => text
+            .chars()
+            .map(|character| to_superscript(character).unwrap_or(character))
+            .collect(),
+        Some(Script::Sub) => text
+            .chars()
+            .map(|character| to_subscript(character).unwrap_or(character))
+            .collect(),
+        None => text.to_string(),
+    }
+}
+
+/// Telegram has no image entity, so an image is rendered as a labelled link like an
+/// ordinary one. When the label is empty there would be nothing to attach the link
+/// to — and a zero-length entity is dropped — so the caller substitutes the URL.
+fn label_is_empty(events: &[Event], start_idx: usize) -> bool {
+    let mut depth = 1_usize;
+    for ev in events.get(start_idx..).unwrap_or(&[]) {
+        match ev {
+            Event::ImageStart { .. } | Event::LinkStart { .. } => depth = depth.saturating_add(1),
+            Event::ImageEnd | Event::LinkEnd => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return true;
+                }
+            }
+            Event::Text(s)
+            | Event::InlineCode(s)
+            | Event::HeadingText(s)
+            | Event::InlineMath { content: s, .. }
+                if !s.trim().is_empty() =>
+            {
+                return false;
+            }
+            _ => {}
+        }
+    }
+    true
 }
 
 impl Default for TelegramEntityBuilder {
@@ -266,8 +330,13 @@ impl TelegramEntityBuilder {
 
         let mut list_stack: Vec<usize> = Vec::new();
         let mut table_state = TableState::default();
-        let mut sup_stack: Vec<bool> = Vec::new();
-        let mut sub_stack: Vec<bool> = Vec::new();
+        // One ordered stack, not two: `x<sup>a<sub>2</sub></sup>` must map "2" with the
+        // innermost script, and two independent stacks always let superscript win.
+        let mut scripts: Vec<Option<Script>> = Vec::new();
+        // Telegram accepts neither nested blockquotes nor overlapping links, so only
+        // the outermost of each becomes an entity.
+        let mut link_depth = 0_usize;
+        let mut quote_depth = 0_usize;
 
         for (i, event) in self.resolved_events.iter().enumerate() {
             if table_state.active {
@@ -285,7 +354,12 @@ impl TelegramEntityBuilder {
 
                         let rendered = table.to_string();
                         if !rendered.is_empty() {
-                            state.pop_newline();
+                            // The table always starts on its own line, but the newline
+                            // that ended the preceding line must survive: trimming it
+                            // would glue "Intro" onto the table's top border.
+                            if !state.text.is_empty() && !state.text.ends_with('\n') {
+                                state.push_text("\n");
+                            }
                             for (j, line) in rendered.lines().enumerate() {
                                 if j > 0 {
                                     state.push_text("\n");
@@ -295,6 +369,12 @@ impl TelegramEntityBuilder {
                                 state.close_entity("code");
                             }
                             state.push_text("\n");
+                        }
+                        // Text that arrived between the last row and the end of the
+                        // table belongs to no cell; emit it rather than dropping it.
+                        let trailing = std::mem::take(&mut table_state.current_cell);
+                        if !trailing.is_empty() {
+                            state.push_text(&trailing);
                         }
                         table_state = TableState::default();
                     }
@@ -323,31 +403,30 @@ impl TelegramEntityBuilder {
                     Event::SuperscriptStart => {
                         let mappable =
                             is_block_mappable(&self.resolved_events, i.saturating_add(1), true);
-                        sup_stack.push(mappable);
+                        scripts.push(mappable.then_some(Script::Super));
                         if !mappable {
                             table_state.current_cell.push_str("<sup>");
                         }
                     }
-                    Event::SuperscriptEnd => {
-                        if let Some(mappable) = sup_stack.pop()
-                            && !mappable
-                        {
+                    Event::SuperscriptEnd =>
+                        if scripts.pop() == Some(None) {
                             table_state.current_cell.push_str("</sup>");
-                        }
-                    }
+                        },
                     Event::SubscriptStart => {
                         let mappable =
                             is_block_mappable(&self.resolved_events, i.saturating_add(1), false);
-                        sub_stack.push(mappable);
+                        scripts.push(mappable.then_some(Script::Sub));
                         if !mappable {
                             table_state.current_cell.push_str("<sub>");
                         }
                     }
-                    Event::SubscriptEnd => {
-                        if let Some(mappable) = sub_stack.pop()
-                            && !mappable
-                        {
+                    Event::SubscriptEnd =>
+                        if scripts.pop() == Some(None) {
                             table_state.current_cell.push_str("</sub>");
+                        },
+                    Event::ImageStart { url } => {
+                        if label_is_empty(&self.resolved_events, i.saturating_add(1)) {
+                            table_state.current_cell.push_str(url);
                         }
                     }
                     Event::Text(string_value)
@@ -355,23 +434,9 @@ impl TelegramEntityBuilder {
                     | Event::InlineMath {
                         content: string_value,
                         ..
-                    } => {
-                        if sup_stack.last() == Some(&true) {
-                            let mapped: String = string_value
-                                .chars()
-                                .map(|character| to_superscript(character).unwrap_or(character))
-                                .collect();
-                            table_state.current_cell.push_str(&mapped);
-                        } else if sub_stack.last() == Some(&true) {
-                            let mapped: String = string_value
-                                .chars()
-                                .map(|character| to_subscript(character).unwrap_or(character))
-                                .collect();
-                            table_state.current_cell.push_str(&mapped);
-                        } else {
-                            table_state.current_cell.push_str(string_value);
-                        }
-                    }
+                    } => table_state
+                        .current_cell
+                        .push_str(&apply_script(&scripts, string_value)),
                     _ => {}
                 }
                 continue;
@@ -384,52 +449,31 @@ impl TelegramEntityBuilder {
                 Event::SuperscriptStart => {
                     let mappable =
                         is_block_mappable(&self.resolved_events, i.saturating_add(1), true);
-                    sup_stack.push(mappable);
+                    scripts.push(mappable.then_some(Script::Super));
                     if !mappable {
                         state.push_text("<sup>");
                     }
                 }
-                Event::SuperscriptEnd => {
-                    if let Some(mappable) = sup_stack.pop()
-                        && !mappable
-                    {
+                Event::SuperscriptEnd =>
+                    if scripts.pop() == Some(None) {
                         state.push_text("</sup>");
-                    }
-                }
+                    },
                 Event::SubscriptStart => {
                     let mappable =
                         is_block_mappable(&self.resolved_events, i.saturating_add(1), false);
-                    sub_stack.push(mappable);
+                    scripts.push(mappable.then_some(Script::Sub));
                     if !mappable {
                         state.push_text("<sub>");
                     }
                 }
-                Event::SubscriptEnd => {
-                    if let Some(mappable) = sub_stack.pop()
-                        && !mappable
-                    {
+                Event::SubscriptEnd =>
+                    if scripts.pop() == Some(None) {
                         state.push_text("</sub>");
-                    }
-                }
+                    },
                 Event::Text(string_value)
                 | Event::HeadingText(string_value)
-                | Event::DisplayMathText(string_value) => {
-                    if sup_stack.last() == Some(&true) {
-                        let mapped: String = string_value
-                            .chars()
-                            .map(|character| to_superscript(character).unwrap_or(character))
-                            .collect();
-                        state.push_text(&mapped);
-                    } else if sub_stack.last() == Some(&true) {
-                        let mapped: String = string_value
-                            .chars()
-                            .map(|character| to_subscript(character).unwrap_or(character))
-                            .collect();
-                        state.push_text(&mapped);
-                    } else {
-                        state.push_text(string_value);
-                    }
-                }
+                | Event::DisplayMathText(string_value) =>
+                    state.push_text(&apply_script(&scripts, string_value)),
                 Event::BoldStart => state.open_entity("bold", None, None),
                 Event::BoldEnd => state.close_entity("bold"),
                 Event::ItalicStart => state.open_entity("italic", None, None),
@@ -440,11 +484,35 @@ impl TelegramEntityBuilder {
                 Event::UnderlineEnd => state.close_entity("underline"),
                 Event::SpoilerStart => state.open_entity("spoiler", None, None),
                 Event::SpoilerEnd => state.close_entity("spoiler"),
-                Event::BlockquoteStart => state.open_entity("blockquote", None, None),
-                Event::BlockquoteEnd => state.close_entity("blockquote"),
+                Event::BlockquoteStart => {
+                    if quote_depth == 0 {
+                        state.open_entity("blockquote", None, None);
+                    }
+                    quote_depth = quote_depth.saturating_add(1);
+                }
+                Event::BlockquoteEnd => {
+                    quote_depth = quote_depth.saturating_sub(1);
+                    if quote_depth == 0 {
+                        state.close_entity("blockquote");
+                    }
+                }
 
-                Event::LinkStart { url } => state.open_entity("text_link", Some(url.clone()), None),
-                Event::LinkEnd => state.close_entity("text_link"),
+                Event::LinkStart { url } | Event::ImageStart { url } => {
+                    if link_depth == 0 {
+                        state.open_entity("text_link", Some(url.clone()), None);
+                    }
+                    link_depth = link_depth.saturating_add(1);
+                    if label_is_empty(&self.resolved_events, i.saturating_add(1)) {
+                        // A zero-length entity is dropped, taking the URL with it.
+                        state.push_text(url);
+                    }
+                }
+                Event::LinkEnd | Event::ImageEnd => {
+                    link_depth = link_depth.saturating_sub(1);
+                    if link_depth == 0 {
+                        state.close_entity("text_link");
+                    }
+                }
 
                 Event::CodeBlockStart(lang) => {
                     let language = if lang.trim().is_empty() {
@@ -460,21 +528,7 @@ impl TelegramEntityBuilder {
                 }
                 Event::InlineCode(code) | Event::InlineMath { content: code, .. } => {
                     state.open_entity("code", None, None);
-                    if sup_stack.last() == Some(&true) {
-                        let mapped: String = code
-                            .chars()
-                            .map(|character| to_superscript(character).unwrap_or(character))
-                            .collect();
-                        state.push_text(&mapped);
-                    } else if sub_stack.last() == Some(&true) {
-                        let mapped: String = code
-                            .chars()
-                            .map(|character| to_subscript(character).unwrap_or(character))
-                            .collect();
-                        state.push_text(&mapped);
-                    } else {
-                        state.push_text(code);
-                    }
+                    state.push_text(&apply_script(&scripts, code));
                     state.close_entity("code");
                 }
 
@@ -568,6 +622,12 @@ impl TelegramEntityBuilder {
     }
 }
 
+/// Splits `text` into chunks of at most `limit` UTF-16 units, re-basing the entities
+/// that overlap each chunk.
+///
+/// Chunks are cut on a newline or space when one falls in the second half of the
+/// window, never between the halves of a surrogate pair, and whitespace-only chunks
+/// are dropped because Telegram refuses to send them.
 #[must_use]
 pub fn split_message_with_entities(
     text: &str,
@@ -591,27 +651,43 @@ pub fn split_message_with_entities(
             let slice = utf16_chars.get(current_start..slice_end).unwrap_or(&[]);
             let mut cut = limit;
 
-            if let Some(newline_index) = slice
-                .iter()
-                .rposition(|&character| character == u16::from(b'\n'))
+            // Breaking on a newline (then a space) keeps messages readable, but only
+            // if the break is late enough to be worth it — a newline in the first few
+            // characters would otherwise produce a nearly empty message.
+            let earliest_useful_cut = limit / 2;
+            let break_at = |wanted: u16| {
+                slice
+                    .iter()
+                    .rposition(|&character| character == wanted)
+                    .map(|index| index.saturating_add(1))
+                    .filter(|candidate| *candidate >= earliest_useful_cut)
+            };
+            if let Some(candidate) =
+                break_at(u16::from(b'\n')).or_else(|| break_at(u16::from(b' ')))
             {
-                cut = newline_index.saturating_add(1);
-            } else if let Some(space_index) = slice
-                .iter()
-                .rposition(|&character| character == u16::from(b' '))
-            {
-                cut = space_index.saturating_add(1);
+                cut = candidate;
             }
 
+            // Never cut between the halves of a surrogate pair: `from_utf16_lossy` would
+            // turn both halves into U+FFFD. This has to be checked even when `cut` lands
+            // exactly on the limit, which is the common case for text without spaces.
             let cut_idx = current_start.saturating_add(cut);
-            if cut < slice.len()
-                && let Some(&character) = utf16_chars.get(cut_idx)
+            if let Some(&character) = utf16_chars.get(cut_idx)
                 && (0xDC00..=0xDFFF).contains(&character)
             {
                 cut = cut.saturating_sub(1);
             }
 
-            cut.max(1)
+            if cut == 0 {
+                // The limit is narrower than the first code point; emitting a slightly
+                // oversized chunk still beats emitting a broken one.
+                let starts_pair = utf16_chars
+                    .get(current_start)
+                    .is_some_and(|&unit| (0xD800..=0xDBFF).contains(&unit));
+                cut = if starts_pair { 2 } else { 1 };
+            }
+
+            cut.min(remaining)
         };
 
         let chunk_end = current_start.saturating_add(chunk_size);
@@ -644,7 +720,11 @@ pub fn split_message_with_entities(
             }
         }
 
-        result.push((chunk_text, chunk_entities));
+        // Telegram rejects a message whose text is only whitespace, and such a chunk
+        // carries no information anyway.
+        if !chunk_text.trim().is_empty() {
+            result.push((chunk_text, chunk_entities));
+        }
         current_start = chunk_end;
     }
 

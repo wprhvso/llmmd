@@ -1,4 +1,4 @@
-include = ["python/**/*.py"]
+include = ["python/**/*.py", "tests_python/**/*.py"]
 
 lint.extend-select = ["ALL"]
 
@@ -29,3 +29,7 @@ lint.ignore = [
 
 [lint.flake8-annotations]
 suppress-dummy-args = true
+
+[lint.per-file-ignores]
+# Tests assert, run subprocesses with fixed argv, and are not an import package.
+"tests_python/*" = ["S101", "S603", "INP001"]
