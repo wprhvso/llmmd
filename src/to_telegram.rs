@@ -328,7 +328,8 @@ impl TelegramEntityBuilder {
             current_utf16_offset: 0,
         };
 
-        let mut list_stack: Vec<usize> = Vec::new();
+        // `None` for a bullet list, `Some(n)` for an ordered one whose next item is n.
+        let mut list_stack: Vec<Option<u64>> = Vec::new();
         let mut table_state = TableState::default();
         // One ordered stack, not two: `x<sup>a<sub>2</sub></sup>` must map "2" with the
         // innermost script, and two independent stacks always let superscript win.
@@ -540,34 +541,37 @@ impl TelegramEntityBuilder {
                     state.close_entity("bold");
                 }
 
-                Event::ListStart { ordered } => {
-                    list_stack.push(usize::from(*ordered));
+                Event::ListStart { ordered, start } => {
+                    list_stack.push(ordered.then_some(*start));
                 }
                 Event::ListItemStart { task_status } => {
                     let depth = list_stack.len().saturating_sub(1);
                     let indent = "  ".repeat(depth);
                     state.push_text(&indent);
 
-                    let is_ordered = list_stack.last().copied().unwrap_or(0) > 0;
+                    let is_ordered = matches!(list_stack.last(), Some(Some(_)));
 
                     if is_ordered {
                         let mut num_str = String::new();
                         let len = list_stack.len();
-                        for (j, &val) in list_stack.iter().enumerate() {
-                            if val > 0 {
+                        for (j, level) in list_stack.iter().enumerate() {
+                            if let Some(number) = level {
                                 if !num_str.is_empty() {
                                     num_str.push('.');
                                 }
-                                if j == len.saturating_sub(1) {
-                                    num_str.push_str(&val.to_string());
+                                // Outer levels have already been advanced past the item
+                                // this one lives in.
+                                let shown = if j == len.saturating_sub(1) {
+                                    *number
                                 } else {
-                                    num_str.push_str(&val.saturating_sub(1).to_string());
-                                }
+                                    number.saturating_sub(1)
+                                };
+                                num_str.push_str(&shown.to_string());
                             }
                         }
                         num_str.push('.');
 
-                        if let Some(last) = list_stack.last_mut() {
+                        if let Some(Some(last)) = list_stack.last_mut() {
                             *last = last.saturating_add(1);
                         }
 

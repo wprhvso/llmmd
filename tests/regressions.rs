@@ -317,3 +317,14 @@ fn display_math_does_not_start_with_a_blank_line() {
     // A genuinely blank first line is still content.
     assert_eq!(text("$$\n\nx\n$$\n"), "\nx\n");
 }
+
+#[test]
+fn an_ordered_list_keeps_the_number_it_starts_at() {
+    // The source number used to be discarded, so every list restarted at 1.
+    assert_eq!(text("3. a\n4. b\n"), "3. a\n4. b\n");
+    assert_eq!(text("5. only\n"), "5. only\n");
+    assert_eq!(text("1. a\n2. b\n"), "1. a\n2. b\n");
+    assert_eq!(text("1) a\n2) b\n"), "1. a\n2. b\n");
+    // A number the writer got wrong is still rendered sequentially.
+    assert_eq!(text("3. a\n9. b\n"), "3. a\n4. b\n");
+}

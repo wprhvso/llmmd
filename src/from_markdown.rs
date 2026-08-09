@@ -15,7 +15,7 @@ pub enum Event {
     HeadingEnd,
     BlockquoteStart,
     BlockquoteEnd,
-    ListStart { ordered: bool },
+    ListStart { ordered: bool, start: u64 },
     ListEnd,
     ListItemStart { task_status: TaskStatus },
     ListItemEnd,
@@ -205,6 +205,7 @@ pub struct LlmMarkdownParser {
     found_thematic_break: bool,
     inline_only: bool,
     current_task_status: TaskStatus,
+    current_list_start: u64,
     global_event_counter: usize,
     speculations: Vec<Speculation>,
     current_line_raw: String,
@@ -241,6 +242,7 @@ impl LlmMarkdownParser {
             found_thematic_break: false,
             inline_only: false,
             current_task_status: TaskStatus::None,
+            current_list_start: 1,
             global_event_counter: 0,
             speculations: Vec::new(),
             current_line_raw: String::new(),
@@ -829,6 +831,12 @@ impl LlmMarkdownParser {
                             self.inherit_indented_parents();
                             self.line_containers.push(Container::List { ordered: true });
                             self.explicit_list_marker = true;
+                            // `3. item` starts the list at three, not at one.
+                            self.current_list_start = self
+                                .prefix_buffer
+                                .trim_end_matches(['.', ')'])
+                                .parse()
+                                .unwrap_or(1);
                             self.prefix_buffer.clear();
                             self.current_indent = 0;
                             self.prefix_state = PrefixState::CheckingTaskBox {
@@ -941,13 +949,21 @@ impl LlmMarkdownParser {
                     }
 
                     let to_open = self.line_containers.get(common..).unwrap_or(&[]).to_vec();
-                    for container in to_open {
+                    let innermost = to_open.len().saturating_sub(1);
+                    for (index, container) in to_open.into_iter().enumerate() {
                         match container {
                             Container::Blockquote => {
                                 self.push_event(Event::BlockquoteStart, &mut actions);
                             }
                             Container::List { ordered } => {
-                                self.push_event(Event::ListStart { ordered }, &mut actions);
+                                // Only the innermost list is the one this line's marker
+                                // opened; any outer level is a re-opened parent.
+                                let start = if index == innermost {
+                                    self.current_list_start
+                                } else {
+                                    1
+                                };
+                                self.push_event(Event::ListStart { ordered, start }, &mut actions);
                                 self.push_event(
                                     Event::ListItemStart {
                                         task_status: self.current_task_status,
@@ -1102,6 +1118,7 @@ impl LlmMarkdownParser {
                     self.explicit_list_marker = false;
                     self.found_thematic_break = false;
                     self.current_task_status = TaskStatus::None;
+                    self.current_list_start = 1;
                     self.prefix_buffer.clear();
 
                     self.last_line_raw = std::mem::take(&mut self.current_line_raw);

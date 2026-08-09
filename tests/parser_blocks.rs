@@ -63,7 +63,10 @@ fn bullet_lists() {
     assert_eq!(
         events("- a\n- b\n"),
         vec![
-            Event::ListStart { ordered: false },
+            Event::ListStart {
+                ordered: false,
+                start: 1,
+            },
             Event::ListItemStart {
                 task_status: TaskStatus::None
             },
@@ -85,7 +88,10 @@ fn ordered_lists_accept_dot_and_paren() {
         let evs = events(markdown);
         assert_eq!(
             evs.first(),
-            Some(&Event::ListStart { ordered: true }),
+            Some(&Event::ListStart {
+                ordered: true,
+                start: 1,
+            }),
             "{markdown:?}"
         );
         assert_eq!(evs.last(), Some(&Event::ListEnd), "{markdown:?}");
