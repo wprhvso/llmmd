@@ -8,7 +8,26 @@ on:
 permissions: {}
 
 jobs:
-  qa:
+  # Rust-часть: настройки (rustfmt.toml, clippy.toml, набор линтов) живут в
+  # wprhvso/qa-rust. Канал toolchain экшен берёт из rust-toolchain.toml.
+  rust:
+    runs-on: nested
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [fmt, clippy, test, doc]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: wprhvso/qa-rust@v1
+        with:
+          checks: ${{ matrix.check }}
+
+  # Python-часть: настройки (ruff.toml, pyrightconfig.json, pytest.ini) живут в
+  # wprhvso/qa-python.
+  python:
     runs-on: nested
     strategy:
       fail-fast: false
