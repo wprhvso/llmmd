@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import pytest
+
 from llmmd import MessageChunk, MessageEntity, process_markdown
 
 CAPTION_LIMIT = 1024

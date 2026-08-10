@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  qa:
+    runs-on: nested
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [ruff, format, pyright, pytest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Пакет собирается maturin'ом, поэтому uv sync внутри экшена требует
+      # компилятора Rust.
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: wprhvso/qa-python@v1
+        with:
+          checks: ${{ matrix.check }}
