@@ -2,7 +2,8 @@ name: cd
 
 on:
   push:
-    tags: ["v*"]
+    branches:
+      - main
   workflow_dispatch:
 
 permissions: {}
@@ -12,8 +13,91 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Publishing is the one step in this repository that cannot be taken back:
+  # PyPI will not accept a version again once it has been uploaded, deleted or
+  # not. Nothing goes out before the same checks that guard a commit have
+  # passed on the commit being released.
+  rust:
+    runs-on: nested
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [fmt, clippy, test, doc]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: wprhvso/qa-rust@v1
+        with:
+          checks: ${{ matrix.check }}
+
+  python:
+    runs-on: nested
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [ruff, format, pyright, pytest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: wprhvso/qa-python@v1
+        with:
+          checks: ${{ matrix.check }}
+
+  # Every push to main lands here, and almost none of them are releases. PyPI
+  # is the record of what has already shipped: a push only releases when the
+  # version pyproject.toml declares is strictly higher than everything PyPI
+  # holds, which makes a release exactly a merged version bump.
+  version:
+    runs-on: nested
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      release: ${{ steps.read.outputs.release }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v9.0.0
+      - id: read
+        run: |
+          set -euo pipefail
+          declared=$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)
+          echo "version=$declared" >> "$GITHUB_OUTPUT"
+          # The wheel takes its version from pyproject.toml, so a Cargo.toml
+          # left behind would ship a crate version that names something else.
+          crate=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if [ "$declared" != "$crate" ]; then
+            echo "pyproject $declared != Cargo.toml $crate" >&2
+            exit 1
+          fi
+          # A 404 means the project has never been published, so anything is
+          # newer. Ordering is PEP 440's, not the shell's: 0.1.10 is above
+          # 0.1.9 and 1.0.0rc1 is below 1.0.0.
+          curl -fsS https://pypi.org/pypi/llmmd/json -o pypi.json || echo '{}' > pypi.json
+          release=$(uv run --no-project --with packaging python - "$declared" <<'PY'
+          import json, sys
+          from packaging.version import InvalidVersion, Version
+
+          declared = Version(sys.argv[1])
+          published = []
+          for raw in json.load(open("pypi.json")).get("releases", {}):
+              try:
+                  published.append(Version(raw))
+              except InvalidVersion:
+                  pass
+          highest = max(published, default=None)
+          print("true" if highest is None or declared > highest else "false")
+          print(f"{declared} vs pypi {highest}", file=sys.stderr)
+          PY
+          )
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+
   wheels:
     name: wheels (${{ matrix.platform.target }}, ${{ matrix.platform.libc }})
+    needs: [rust, python, version]
+    if: needs.version.outputs.release == 'true'
     runs-on: nested
     strategy:
       fail-fast: false
@@ -61,6 +145,8 @@ jobs:
           if-no-files-found: error
 
   sdist:
+    needs: [rust, python, version]
+    if: needs.version.outputs.release == 'true'
     runs-on: nested
     steps:
       - uses: actions/checkout@v7
@@ -79,9 +165,9 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: [wheels, sdist]
+    needs: [version, wheels, sdist]
+    if: needs.version.outputs.release == 'true'
     runs-on: nested
-    if: startsWith(github.ref, 'refs/tags/')
     environment: pypi
     permissions:
       contents: write
@@ -102,8 +188,12 @@ jobs:
         with:
           packages-dir: dist
 
+      # The tag is a record of what shipped, so it is written once the upload
+      # that cannot be taken back has succeeded.
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ needs.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
           files: dist/*
           generate_release_notes: true
           fail_on_unmatched_files: true
