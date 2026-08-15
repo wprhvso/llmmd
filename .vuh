@@ -13,3 +13,19 @@ IS_INCREMENT_REQUIRED_ONLY_ON_CHANGES='true'
 MINOR_CHANGING_LOCATIONS=''
 
 MAJOR_CHANGING_LOCATIONS=''
+
+# The wheel takes its version from pyproject.toml, but the crate it is built
+# from carries its own copy, and both lock files pin what they resolved to.
+# vuh owns one file per module, so the other three follow from it here rather
+# than being left behind at the previous version.
+#
+# $1 - version before the update
+# $2 - version after the update
+function after_successful_version_update() {
+  new_version=$2
+  cd "$ROOT_REPO_DIR" || return 1
+  sed -i "0,/^version = /s|^version = .*|version = \"$new_version\"|" Cargo.toml
+  cargo update --offline --workspace >/dev/null 2>&1 || cargo update --workspace
+  uv lock --offline >/dev/null 2>&1 || uv lock
+  cd - >/dev/null || return 1
+}
