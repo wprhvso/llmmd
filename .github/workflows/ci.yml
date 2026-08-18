@@ -11,7 +11,7 @@ jobs:
   # Rust-часть: настройки (rustfmt.toml, clippy.toml, набор линтов) живут в
   # wprhvso/qa-rust. Канал toolchain экшен берёт из rust-toolchain.toml.
   rust:
-    runs-on: nested
+    runs-on: pool
     strategy:
       fail-fast: false
       matrix:
@@ -28,7 +28,7 @@ jobs:
   # Python-часть: настройки (ruff.toml, pyrightconfig.json, pytest.ini) живут в
   # wprhvso/qa-python.
   python:
-    runs-on: nested
+    runs-on: pool
     strategy:
       fail-fast: false
       matrix:

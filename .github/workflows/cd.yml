@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   rust:
-    runs-on: nested
+    runs-on: pool
     strategy:
       fail-fast: false
       matrix:
@@ -28,7 +28,7 @@ jobs:
           checks: ${{ matrix.check }}
 
   python:
-    runs-on: nested
+    runs-on: pool
     strategy:
       fail-fast: false
       matrix:
@@ -43,7 +43,7 @@ jobs:
           checks: ${{ matrix.check }}
 
   version:
-    runs-on: nested
+    runs-on: pool
     outputs:
       version: ${{ steps.read.outputs.version }}
       release: ${{ steps.read.outputs.release }}
@@ -85,7 +85,7 @@ jobs:
     name: wheels (${{ matrix.platform.target }}, ${{ matrix.platform.libc }})
     needs: [rust, python, version]
     if: needs.version.outputs.release == 'true'
-    runs-on: nested
+    runs-on: pool
     strategy:
       fail-fast: false
       matrix:
@@ -131,7 +131,7 @@ jobs:
   sdist:
     needs: [rust, python, version]
     if: needs.version.outputs.release == 'true'
-    runs-on: nested
+    runs-on: pool
     steps:
       - uses: actions/checkout@v7
         with:
@@ -149,7 +149,7 @@ jobs:
   release:
     needs: [version, wheels, sdist]
     if: needs.version.outputs.release == 'true'
-    runs-on: nested
+    runs-on: pool
     environment: pypi
     permissions:
       contents: write
