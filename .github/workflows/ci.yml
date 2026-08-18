@@ -38,10 +38,6 @@ jobs:
         with:
           persist-credentials: false
 
-      # Пакет собирается maturin'ом, поэтому uv sync внутри экшена требует
-      # компилятора Rust.
-      - uses: dtolnay/rust-toolchain@nightly
-
       - uses: wprhvso/qa-python@v1
         with:
           checks: ${{ matrix.check }}
