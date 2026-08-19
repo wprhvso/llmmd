@@ -1,7 +1,3 @@
-//! Shared helpers for the integration tests.
-//!
-//! Each test binary links its own copy, so helpers used by only some of them
-//! would otherwise be reported as dead code.
 
 #![allow(dead_code)]
 
@@ -10,7 +6,6 @@ use _native::{
     to_telegram::{MessageEntity, TelegramEntityBuilder},
 };
 
-/// Runs the parser over `markdown` in one go and returns the raw action stream.
 #[must_use]
 pub fn actions(markdown: &str) -> Vec<Action> {
     let mut parser = LlmMarkdownParser::new();
@@ -19,13 +14,11 @@ pub fn actions(markdown: &str) -> Vec<Action> {
     out
 }
 
-/// Applies the action stream, yielding the events that actually survive rollbacks.
 #[must_use]
 pub fn events(markdown: &str) -> Vec<Event> {
     resolve(actions(markdown))
 }
 
-/// Feeds `markdown` to the parser one chunk at a time, as a stream would.
 #[must_use]
 pub fn events_chunked(markdown: &str, chunk_size: usize) -> Vec<Event> {
     assert!(chunk_size > 0, "chunk_size must be positive");
@@ -49,11 +42,6 @@ pub fn events_chunked(markdown: &str, chunk_size: usize) -> Vec<Event> {
     resolve(out)
 }
 
-/// Collapses `Emit`/`Rollback` pairs the same way the entity builder does.
-///
-/// A rollback that asks for more events than have been emitted would silently
-/// erase unrelated output in the real builder (it saturates), so it is treated as
-/// a hard failure here.
 #[must_use]
 pub fn resolve(actions: Vec<Action>) -> Vec<Event> {
     let mut resolved: Vec<Event> = Vec::new();
@@ -73,11 +61,6 @@ pub fn resolve(actions: Vec<Action>) -> Vec<Event> {
     resolved
 }
 
-/// Joins runs of adjacent `Text` events into one.
-///
-/// Chunk boundaries decide only where the parser happens to flush its buffer, so
-/// two streams that differ purely in text granularity are equivalent as far as the
-/// entity builder is concerned.
 #[must_use]
 pub fn merge_text(events: Vec<Event>) -> Vec<Event> {
     let mut merged: Vec<Event> = Vec::with_capacity(events.len());
@@ -90,10 +73,8 @@ pub fn merge_text(events: Vec<Event>) -> Vec<Event> {
     merged
 }
 
-/// An opening-event predicate, its closing counterpart, and a name for messages.
 pub type EventPair = (fn(&Event) -> bool, fn(&Event) -> bool, &'static str);
 
-/// Every construct that has to open and close in pairs.
 pub fn balanced_pairs() -> Vec<EventPair> {
     vec![
         (
@@ -189,7 +170,6 @@ pub fn balanced_pairs() -> Vec<EventPair> {
     ]
 }
 
-/// Asserts that every start event in `markdown`'s resolved stream has its end.
 pub fn assert_balanced(markdown: &str) {
     let resolved = resolve(actions(markdown));
     for (is_start, is_end, name) in balanced_pairs() {
@@ -202,7 +182,6 @@ pub fn assert_balanced(markdown: &str) {
     }
 }
 
-/// Full pipeline: markdown in, Telegram text plus entities out.
 #[must_use]
 pub fn render(markdown: &str) -> (String, Vec<MessageEntity>) {
     let mut builder = TelegramEntityBuilder::new();
@@ -212,13 +191,11 @@ pub fn render(markdown: &str) -> (String, Vec<MessageEntity>) {
     builder.build()
 }
 
-/// Just the rendered text, for tests that do not care about entities.
 #[must_use]
 pub fn text(markdown: &str) -> String {
     render(markdown).0
 }
 
-/// The entities of `kind`, as `(offset, length)` pairs in document order.
 #[must_use]
 pub fn spans(markdown: &str, kind: &str) -> Vec<(i64, i64)> {
     let (_, entities) = render(markdown);
@@ -231,7 +208,6 @@ pub fn spans(markdown: &str, kind: &str) -> Vec<(i64, i64)> {
     found
 }
 
-/// Extracts the substring an entity covers, using UTF-16 offsets like Telegram does.
 #[must_use]
 pub fn slice_utf16(text: &str, offset: i64, length: i64) -> String {
     let units: Vec<u16> = text.encode_utf16().collect();
@@ -240,8 +216,6 @@ pub fn slice_utf16(text: &str, offset: i64, length: i64) -> String {
     String::from_utf16_lossy(units.get(start..end.min(units.len())).unwrap_or(&[]))
 }
 
-/// Asserts that every entity lies inside the text and, for well-known kinds, that
-/// nesting stays balanced. Every rendering test funnels through this.
 pub fn assert_entities_valid(text: &str, entities: &[MessageEntity]) {
     let total = i64::try_from(text.encode_utf16().count()).expect("text length fits in i64");
     for entity in entities {

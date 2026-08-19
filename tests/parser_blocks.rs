@@ -1,4 +1,3 @@
-//! Event-level tests for block constructs: headings, lists, quotes, fences, tables.
 
 mod common;
 
@@ -171,7 +170,7 @@ fn thematic_breaks() {
             "{markdown:?} should produce a thematic break"
         );
     }
-    // Two markers are not enough.
+
     assert!(!events("a\n\n--\n\nb").contains(&Event::ThematicBreak));
 }
 
@@ -198,7 +197,7 @@ fn code_fence_content_is_not_interpreted() {
 
 #[test]
 fn unterminated_fence_keeps_its_language() {
-    // Regression: the info string used to leak out as ordinary body text.
+
     assert_eq!(
         events("```rust"),
         vec![Event::CodeBlockStart("rust".into()), Event::CodeBlockEnd,]
@@ -215,7 +214,7 @@ fn unterminated_fence_keeps_its_language() {
 
 #[test]
 fn partial_closing_fence_stays_in_the_body() {
-    // Regression: the trailing backticks used to be dropped.
+
     assert_eq!(
         events("```\ncode\n``"),
         vec![
@@ -282,7 +281,7 @@ fn tables_are_recognised_and_rolled_back() {
         evs.contains(&Event::TableCellStart { is_header: true }),
         "the header row must be marked: {evs:?}"
     );
-    // The raw source of the header row must not survive as literal text.
+
     assert!(
         !evs.iter()
             .any(|e| matches!(e, Event::Text(t) if t.contains('|')))
@@ -355,7 +354,7 @@ fn containers_are_always_balanced() {
 
 #[test]
 fn chunked_input_matches_a_single_chunk() {
-    // The parser is a streaming one; feeding it in slices must not change the result.
+
     let documents = [
         "# Title\n\nHello **bold** and *italic*.\n",
         "- a\n- b\n  - c\n",

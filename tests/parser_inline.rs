@@ -1,4 +1,3 @@
-//! Event-level tests for inline constructs and the speculation/rollback machinery.
 
 mod common;
 
@@ -56,7 +55,7 @@ fn bold_italic_and_bold_italic() {
 
 #[test]
 fn underscore_emphasis_is_not_applied_inside_words() {
-    // snake_case identifiers must survive untouched.
+
     assert_eq!(text_of("a_b_c"), "a_b_c");
     assert!(!events("a_b_c").contains(&Event::ItalicStart));
 
@@ -151,7 +150,7 @@ fn currency_amounts_are_not_math() {
 
 #[test]
 fn closing_math_delimiter_needs_non_space_before_it() {
-    // `$x $` is prose, not math: the closing delimiter follows a space.
+
     assert_eq!(text_of("a $x $ y"), "a $x $ y");
     assert!(
         !events("a $x $ y")
@@ -215,8 +214,7 @@ fn bang_without_bracket_stays_literal() {
 
 #[test]
 fn nested_inline_content_is_not_duplicated() {
-    // Regression: `parse_inline` used to drop the rollback actions of the inner parse,
-    // leaving both the literal source and the resolved form in the stream.
+
     assert_eq!(
         events("**bold with `code` inside**"),
         vec![
@@ -258,8 +256,7 @@ fn nested_inline_content_is_not_duplicated() {
 
 #[test]
 fn deeply_nested_emphasis_terminates() {
-    // The inline re-parse is recursive; make sure a pathological input neither hangs
-    // nor overflows the stack.
+
     let depth = 200;
     let markdown = format!("{}x{}", "*".repeat(depth), "*".repeat(depth));
     let rendered = text_of(&markdown);
@@ -268,8 +265,7 @@ fn deeply_nested_emphasis_terminates() {
 
 #[test]
 fn html_like_text_is_preserved_verbatim() {
-    // Regression: the terminating character used to be appended to the tag *and*
-    // reprocessed, duplicating it.
+
     assert_eq!(text_of("x < y"), "x < y");
     assert_eq!(text_of("a <b c>d"), "a <b c>d");
     assert_eq!(text_of("a <verylongtag>b"), "a <verylongtag>b");
@@ -300,7 +296,7 @@ fn superscript_and_subscript_events() {
 
 #[test]
 fn trailing_delimiters_are_never_swallowed() {
-    // Regression: `end()` used to drop these states entirely.
+
     assert_eq!(text_of("abc ###"), "abc ###");
     assert_eq!(text_of("###"), "###");
     assert_eq!(text_of("abc `"), "abc `");
@@ -313,9 +309,7 @@ fn trailing_delimiters_are_never_swallowed() {
 
 #[test]
 fn rollback_counts_match_the_events_they_undo() {
-    // A rollback that overshoots would silently delete earlier, unrelated events;
-    // one that undershoots would leave literal debris behind. Both show up as a
-    // mismatch between resolving the stream and the resolved event list.
+
     for markdown in [
         "**b**",
         "a `c` b",

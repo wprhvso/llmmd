@@ -8,8 +8,6 @@ on:
 permissions: {}
 
 jobs:
-  # Rust-часть: настройки (rustfmt.toml, clippy.toml, набор линтов) живут в
-  # wprhvso/qa-rust. Канал toolchain экшен берёт из rust-toolchain.toml.
   rust:
     runs-on: pool
     strategy:
@@ -25,8 +23,6 @@ jobs:
         with:
           checks: ${{ matrix.check }}
 
-  # Python-часть: настройки (ruff.toml, pyrightconfig.json, pytest.ini) живут в
-  # wprhvso/qa-python.
   python:
     runs-on: pool
     strategy:

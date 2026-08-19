@@ -65,9 +65,6 @@ impl BuildState {
         self.text.pop();
         self.current_utf16_offset = self.current_utf16_offset.saturating_sub(1);
 
-        // Dropping the newline retroactively shortens the text, so entities that were
-        // already closed over it now reach past the end. Telegram rejects those, so
-        // clamp them (and drop the ones left empty).
         let limit = i64::try_from(self.current_utf16_offset).unwrap_or(i64::MAX);
         self.entities.retain_mut(|entity| {
             if entity.offset.saturating_add(entity.length) > limit {
@@ -244,14 +241,12 @@ fn is_block_mappable(events: &[Event], start_idx: usize, is_sup: bool) -> bool {
     false
 }
 
-/// Which Unicode script an enclosing `<sup>`/`<sub>` maps its text into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Script {
     Super,
     Sub,
 }
 
-/// Applies the innermost mappable script, if any, to `text`.
 fn apply_script(scripts: &[Option<Script>], text: &str) -> String {
     match scripts.iter().rev().find_map(|script| *script) {
         Some(Script::Super) => text
@@ -266,9 +261,6 @@ fn apply_script(scripts: &[Option<Script>], text: &str) -> String {
     }
 }
 
-/// Telegram has no image entity, so an image is rendered as a labelled link like an
-/// ordinary one. When the label is empty there would be nothing to attach the link
-/// to — and a zero-length entity is dropped — so the caller substitutes the URL.
 fn label_is_empty(events: &[Event], start_idx: usize) -> bool {
     let mut depth = 1_usize;
     for ev in events.get(start_idx..).unwrap_or(&[]) {
@@ -328,14 +320,11 @@ impl TelegramEntityBuilder {
             current_utf16_offset: 0,
         };
 
-        // `None` for a bullet list, `Some(n)` for an ordered one whose next item is n.
         let mut list_stack: Vec<Option<u64>> = Vec::new();
         let mut table_state = TableState::default();
-        // One ordered stack, not two: `x<sup>a<sub>2</sub></sup>` must map "2" with the
-        // innermost script, and two independent stacks always let superscript win.
+
         let mut scripts: Vec<Option<Script>> = Vec::new();
-        // Telegram accepts neither nested blockquotes nor overlapping links, so only
-        // the outermost of each becomes an entity.
+
         let mut link_depth = 0_usize;
         let mut quote_depth = 0_usize;
 
@@ -355,9 +344,7 @@ impl TelegramEntityBuilder {
 
                         let rendered = table.to_string();
                         if !rendered.is_empty() {
-                            // The table always starts on its own line, but the newline
-                            // that ended the preceding line must survive: trimming it
-                            // would glue "Intro" onto the table's top border.
+
                             if !state.text.is_empty() && !state.text.ends_with('\n') {
                                 state.push_text("\n");
                             }
@@ -371,8 +358,7 @@ impl TelegramEntityBuilder {
                             }
                             state.push_text("\n");
                         }
-                        // Text that arrived between the last row and the end of the
-                        // table belongs to no cell; emit it rather than dropping it.
+
                         let trailing = std::mem::take(&mut table_state.current_cell);
                         if !trailing.is_empty() {
                             state.push_text(&trailing);
@@ -504,7 +490,7 @@ impl TelegramEntityBuilder {
                     }
                     link_depth = link_depth.saturating_add(1);
                     if label_is_empty(&self.resolved_events, i.saturating_add(1)) {
-                        // A zero-length entity is dropped, taking the URL with it.
+
                         state.push_text(url);
                     }
                 }
@@ -559,8 +545,7 @@ impl TelegramEntityBuilder {
                                 if !num_str.is_empty() {
                                     num_str.push('.');
                                 }
-                                // Outer levels have already been advanced past the item
-                                // this one lives in.
+
                                 let shown = if j == len.saturating_sub(1) {
                                     *number
                                 } else {
@@ -626,12 +611,6 @@ impl TelegramEntityBuilder {
     }
 }
 
-/// Splits `text` into chunks of at most `limit` UTF-16 units, re-basing the entities
-/// that overlap each chunk.
-///
-/// Chunks are cut on a newline or space when one falls in the second half of the
-/// window, never between the halves of a surrogate pair, and whitespace-only chunks
-/// are dropped because Telegram refuses to send them.
 #[must_use]
 pub fn split_message_with_entities(
     text: &str,
@@ -655,9 +634,6 @@ pub fn split_message_with_entities(
             let slice = utf16_chars.get(current_start..slice_end).unwrap_or(&[]);
             let mut cut = limit;
 
-            // Breaking on a newline (then a space) keeps messages readable, but only
-            // if the break is late enough to be worth it — a newline in the first few
-            // characters would otherwise produce a nearly empty message.
             let earliest_useful_cut = limit / 2;
             let break_at = |wanted: u16| {
                 slice
@@ -672,9 +648,6 @@ pub fn split_message_with_entities(
                 cut = candidate;
             }
 
-            // Never cut between the halves of a surrogate pair: `from_utf16_lossy` would
-            // turn both halves into U+FFFD. This has to be checked even when `cut` lands
-            // exactly on the limit, which is the common case for text without spaces.
             let cut_idx = current_start.saturating_add(cut);
             if let Some(&character) = utf16_chars.get(cut_idx)
                 && (0xDC00..=0xDFFF).contains(&character)
@@ -683,8 +656,7 @@ pub fn split_message_with_entities(
             }
 
             if cut == 0 {
-                // The limit is narrower than the first code point; emitting a slightly
-                // oversized chunk still beats emitting a broken one.
+
                 let starts_pair = utf16_chars
                     .get(current_start)
                     .is_some_and(|&unit| (0xD800..=0xDBFF).contains(&unit));
@@ -724,8 +696,6 @@ pub fn split_message_with_entities(
             }
         }
 
-        // Telegram rejects a message whose text is only whitespace, and such a chunk
-        // carries no information anyway.
         if !chunk_text.trim().is_empty() {
             result.push((chunk_text, chunk_entities));
         }

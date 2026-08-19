@@ -1,12 +1,9 @@
-//! Property-style tests: whatever an LLM throws at the parser, it must not panic,
-//! must not corrupt plain text, and must emit entities Telegram would accept.
 
 mod common;
 
 use _native::to_telegram::{MessageEntity, process_llm_markdown_sync};
 use common::{actions, assert_entities_valid, balanced_pairs, render, resolve};
 
-/// A tiny deterministic PRNG so the corpus is reproducible without a dev-dependency.
 struct Rng(u64);
 
 impl Rng {
@@ -16,7 +13,7 @@ impl Rng {
 
     #[allow(clippy::missing_const_for_fn)]
     fn next(&mut self) -> u64 {
-        // xorshift64*
+
         self.0 ^= self.0 >> 12;
         self.0 ^= self.0 << 25;
         self.0 ^= self.0 >> 27;
@@ -29,7 +26,6 @@ impl Rng {
     }
 }
 
-/// Fragments chosen to collide with every state the parser has.
 const FRAGMENTS: &[&str] = &[
     "a",
     "b",
@@ -117,7 +113,7 @@ fn corpus_seeded(seed: u64, count: usize) -> Vec<String> {
 #[test]
 fn random_markup_soup_never_panics_and_keeps_entities_valid() {
     for document in corpus(4000) {
-        // `resolve` asserts that no rollback overshoots the emitted events.
+
         let _ = resolve(actions(&document));
 
         let (text, entities) = render(&document);
@@ -144,7 +140,7 @@ fn random_markup_soup_survives_the_public_entry_point() {
 
 #[test]
 fn plain_prose_is_reproduced_byte_for_byte() {
-    // Text with no markup characters at all must pass through untouched.
+
     let documents = [
         "just some words",
         "line one\nline two\nline three\n",
@@ -160,7 +156,7 @@ fn plain_prose_is_reproduced_byte_for_byte() {
 
 #[test]
 fn every_text_character_of_a_document_reaches_the_output() {
-    // Markers are consumed, but letters and digits never are.
+
     let document = "\
 # Heading one
 
@@ -190,8 +186,7 @@ snippet = 1
         .chars()
         .filter(|character| character.is_alphanumeric())
         .collect();
-    // The table is re-rendered and the image URL is inlined, so `actual` may hold
-    // more, but nothing from the source may go missing.
+
     for needle in [
         "Heading", "one", "bold", "italic", "code", "math", "alpha", "beta", "quoted", "head",
         "cell", "val1", "val2", "snippet", "anchor", "image",
@@ -216,9 +211,7 @@ fn rendering_is_deterministic() {
 
 #[test]
 fn no_speculative_start_event_survives_without_its_end() {
-    // Every opening event has to be matched by its closing counterpart in the
-    // resolved stream; a leaked start would produce an unterminated Telegram entity,
-    // and a leaked end would nest the output wrongly.
+
     let pairs = balanced_pairs();
 
     for seed in 0..24_u64 {

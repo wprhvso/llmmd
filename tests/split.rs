@@ -1,4 +1,3 @@
-//! Tests for `split_message_with_entities` and the public `process_llm_markdown_sync`.
 
 mod common;
 
@@ -18,8 +17,6 @@ fn utf16_len(text: &str) -> usize {
     text.encode_utf16().count()
 }
 
-/// Splitting may only drop whitespace-only chunks (Telegram refuses to send them);
-/// every other character must survive, in order, without replacement characters.
 fn assert_lossless(text: &str, chunks: &[(String, Vec<MessageEntity>)]) {
     let rejoined: String = chunks.iter().map(|(chunk, _)| chunk.as_str()).collect();
     assert!(
@@ -39,7 +36,6 @@ fn assert_lossless(text: &str, chunks: &[(String, Vec<MessageEntity>)]) {
     }
 }
 
-/// Every entity must still cover exactly the substring it covered before the split.
 fn assert_entities_survive(text: &str, entities: &[MessageEntity], limit: usize) {
     let chunks = split_message_with_entities(text, entities, limit);
     assert_lossless(text, &chunks);
@@ -65,7 +61,6 @@ fn assert_entities_survive(text: &str, entities: &[MessageEntity], limit: usize)
     }
     assert_eq!(base, units.len());
 
-    // Concatenating the per-chunk pieces of one entity must rebuild the original span.
     for original in entities {
         let offset = usize::try_from(original.offset).expect("offset fits");
         let length = usize::try_from(original.length).expect("length fits");
@@ -123,8 +118,7 @@ fn splitting_prefers_a_newline_then_a_space() {
 
 #[test]
 fn a_surrogate_pair_is_never_cut_in_half() {
-    // Regression: the guard used to be skipped whenever the cut landed exactly on
-    // the limit, which is precisely what happens for text without spaces.
+
     for limit in 2..40_usize {
         let text = "😀".repeat(40);
         let chunks = split_message_with_entities(&text, &[], limit);
@@ -245,7 +239,7 @@ fn process_keeps_entities_inside_their_chunk() {
 
 #[test]
 fn whitespace_only_chunks_are_not_emitted() {
-    // Telegram answers "message text is empty" for a message made only of newlines.
+
     let text = format!("{}\n\n\n", "a".repeat(100));
     let chunks = split_message_with_entities(&text, &[], 100);
     assert_lossless(&text, &chunks);
@@ -255,12 +249,11 @@ fn whitespace_only_chunks_are_not_emitted() {
 
 #[test]
 fn an_early_line_break_does_not_produce_a_tiny_chunk() {
-    // The last newline in the window used to be taken however early it was, so a
-    // leading "\n" produced a one-character message.
+
     let text = format!("\n{}", "a".repeat(300));
     let chunks = split_message_with_entities(&text, &[], 100);
     assert_lossless(&text, &chunks);
-    // The last chunk is whatever is left over; every other one must be a full window.
+
     for (chunk, _) in chunks.split_last().expect("at least one chunk").1 {
         assert_eq!(
             utf16_len(chunk),

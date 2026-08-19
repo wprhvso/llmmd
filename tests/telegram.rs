@@ -1,10 +1,8 @@
-//! Tests for `TelegramEntityBuilder`: text rendering and UTF-16 entity offsets.
 
 mod common;
 
 use common::{assert_entities_valid, render, slice_utf16, spans, text};
 
-/// Renders and asserts the structural invariants every output must satisfy.
 fn checked(markdown: &str) -> (String, Vec<_native::to_telegram::MessageEntity>) {
     let (rendered, entities) = render(markdown);
     assert_entities_valid(&rendered, &entities);
@@ -42,7 +40,7 @@ fn entity_offsets_point_at_the_right_substring() {
 
 #[test]
 fn offsets_are_utf16_units_not_bytes_or_chars() {
-    // "😀" is one char but two UTF-16 units; "ж" is one unit but two bytes.
+
     let (rendered, _) = checked("ж😀 **b**");
     assert_eq!(rendered, "ж😀 b");
     assert_eq!(spans("ж😀 **b**", "bold"), vec![(4, 1)]);
@@ -71,7 +69,7 @@ fn links_carry_their_url() {
 
 #[test]
 fn images_keep_their_url_as_a_link() {
-    // Regression: image events used to be ignored, dropping the URL entirely.
+
     let (rendered, entities) = checked("![alt text](https://example.com/a.png)");
     assert_eq!(rendered, "alt text");
     let link = entities
@@ -160,7 +158,7 @@ fn superscript_maps_to_unicode_when_every_character_can() {
 
 #[test]
 fn superscript_falls_back_to_tags_when_it_cannot_map() {
-    // There is no superscript "Q" in Unicode, so the markup is kept verbatim.
+
     assert_eq!(text("x<sup>Q</sup>"), "x<sup>Q</sup>");
 }
 
