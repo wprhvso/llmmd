@@ -20,7 +20,7 @@ pub fn events(markdown: &str) -> Vec<Event> {
 }
 
 #[must_use]
-pub fn events_chunked(markdown: &str, chunk_size: usize) -> Vec<Event> {
+pub fn actions_chunked(markdown: &str, chunk_size: usize) -> Vec<Action> {
     assert!(chunk_size > 0, "chunk_size must be positive");
 
     let mut parser = LlmMarkdownParser::new();
@@ -39,7 +39,53 @@ pub fn events_chunked(markdown: &str, chunk_size: usize) -> Vec<Event> {
     }
     out.extend(parser.end().actions);
 
-    resolve(out)
+    out
+}
+
+#[must_use]
+pub fn actions_at_boundaries(markdown: &str, boundaries: &[usize]) -> Vec<Action> {
+    let characters: Vec<char> = markdown.chars().collect();
+    let mut cuts: Vec<usize> = boundaries
+        .iter()
+        .map(|cut| (*cut).min(characters.len()))
+        .collect();
+    cuts.push(characters.len());
+    cuts.sort_unstable();
+
+    let mut parser = LlmMarkdownParser::new();
+    let mut out = Vec::new();
+    let mut start = 0_usize;
+
+    for cut in cuts {
+        if cut <= start {
+            continue;
+        }
+        let piece: String = characters.get(start..cut).unwrap_or(&[]).iter().collect();
+        out.extend(parser.push_chunk(&piece).actions);
+        start = cut;
+    }
+    out.extend(parser.end().actions);
+
+    out
+}
+
+#[must_use]
+pub fn events_chunked(markdown: &str, chunk_size: usize) -> Vec<Event> {
+    resolve(actions_chunked(markdown, chunk_size))
+}
+
+#[must_use]
+pub fn render_actions(actions: Vec<Action>) -> (String, Vec<MessageEntity>) {
+    let mut builder = TelegramEntityBuilder::new();
+    for action in actions {
+        builder.push_action(action);
+    }
+    builder.build()
+}
+
+#[must_use]
+pub fn render_chunked(markdown: &str, chunk_size: usize) -> (String, Vec<MessageEntity>) {
+    render_actions(actions_chunked(markdown, chunk_size))
 }
 
 #[must_use]
@@ -184,11 +230,7 @@ pub fn assert_balanced(markdown: &str) {
 
 #[must_use]
 pub fn render(markdown: &str) -> (String, Vec<MessageEntity>) {
-    let mut builder = TelegramEntityBuilder::new();
-    for action in actions(markdown) {
-        builder.push_action(action);
-    }
-    builder.build()
+    render_actions(actions(markdown))
 }
 
 #[must_use]
@@ -245,4 +287,122 @@ pub fn assert_entities_valid(text: &str, entities: &[MessageEntity]) {
             );
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct Rng(u64);
+
+impl Rng {
+    #[must_use]
+    pub const fn new(seed: u64) -> Self {
+        Self(seed ^ 0x9E37_79B9_7F4A_7C15)
+    }
+
+    #[allow(clippy::missing_const_for_fn)]
+    pub fn next_u64(&mut self) -> u64 {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    pub fn below(&mut self, bound: usize) -> usize {
+        if bound == 0 {
+            return 0;
+        }
+        let drawn = self.next_u64();
+        let bound_u64 = u64::try_from(bound).unwrap_or(u64::MAX);
+        usize::try_from(drawn % bound_u64).unwrap_or(0)
+    }
+
+    pub fn pick<'a, T>(&mut self, items: &'a [T]) -> &'a T {
+        let index = self.below(items.len());
+        items.get(index).expect("picked index is inside the slice")
+    }
+}
+
+pub const FRAGMENTS: &[&str] = &[
+    "a",
+    "b",
+    " ",
+    "\n",
+    "\n\n",
+    "*",
+    "**",
+    "***",
+    "_",
+    "__",
+    "~",
+    "~~",
+    "`",
+    "``",
+    "```",
+    "$",
+    "$$",
+    "\\",
+    "\\(",
+    "\\)",
+    "\\[",
+    "\\]",
+    "|",
+    "||",
+    "<",
+    ">",
+    "<u>",
+    "</u>",
+    "<sup>",
+    "</sup>",
+    "<sub>",
+    "</sub>",
+    "#",
+    "##",
+    "# ",
+    "- ",
+    "1. ",
+    "1) ",
+    "[",
+    "]",
+    "(",
+    ")",
+    "![",
+    "](x)",
+    "(https://e.com)",
+    "> ",
+    "---",
+    "***",
+    "[ ]",
+    "[x]",
+    "|---|",
+    "| a |",
+    "rust",
+    "😀",
+    "ж",
+    "\t",
+    "   ",
+    ">>",
+    "  - ",
+    "    ",
+    "1",
+    "2",
+    ".",
+    "!",
+    "-",
+    "+",
+    "=",
+];
+
+#[must_use]
+pub fn corpus_seeded(seed: u64, count: usize) -> Vec<String> {
+    let mut rng = Rng::new(seed);
+    (0..count)
+        .map(|_| {
+            let pieces = rng.below(40).saturating_add(1);
+            (0..pieces).map(|_| *rng.pick(FRAGMENTS)).collect()
+        })
+        .collect()
+}
+
+#[must_use]
+pub fn corpus(count: usize) -> Vec<String> {
+    corpus_seeded(0x5EED_1234, count)
 }

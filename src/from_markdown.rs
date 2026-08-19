@@ -1781,3 +1781,121 @@ impl LlmMarkdownParser {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Event, LlmMarkdownParser};
+
+    fn cells(row: &str) -> Vec<String> {
+        LlmMarkdownParser::split_row_cells(row)
+    }
+
+    #[test]
+    fn a_delimiter_row_needs_pipes_and_dashes() {
+        assert!(LlmMarkdownParser::is_delimiter_row("|---|---|"));
+        assert!(LlmMarkdownParser::is_delimiter_row(" | :--- | ---: | "));
+        assert!(!LlmMarkdownParser::is_delimiter_row("|   |   |"));
+        assert!(!LlmMarkdownParser::is_delimiter_row("-----"));
+        assert!(!LlmMarkdownParser::is_delimiter_row(""));
+        assert!(!LlmMarkdownParser::is_delimiter_row("| a | b |"));
+    }
+
+    #[test]
+    fn a_table_row_is_any_non_empty_line_with_a_pipe() {
+        assert!(LlmMarkdownParser::is_table_row("| a |"));
+        assert!(LlmMarkdownParser::is_table_row("a | b"));
+        assert!(!LlmMarkdownParser::is_table_row("   "));
+        assert!(!LlmMarkdownParser::is_table_row("no pipe here"));
+    }
+
+    #[test]
+    fn cells_split_on_unescaped_pipes_only() {
+        assert_eq!(cells("| a | b |"), vec![" a ", " b "]);
+        assert_eq!(cells("a|b"), vec!["a", "b"]);
+        assert_eq!(cells(r"| a \| b |"), vec![" a | b "]);
+        assert_eq!(cells(r"| a \n b |"), vec![r" a \n b "]);
+    }
+
+    #[test]
+    fn a_row_without_outer_pipes_keeps_all_its_cells() {
+        assert_eq!(cells("a | b | c"), vec!["a ", " b ", " c"]);
+        assert_eq!(cells("only"), vec!["only"]);
+        assert_eq!(cells("|"), vec![""]);
+    }
+
+    #[test]
+    fn a_trailing_backslash_is_kept_in_the_last_cell() {
+        assert_eq!(cells(r"a\"), vec![r"a\"]);
+    }
+
+    #[test]
+    fn a_thematic_marker_is_one_of_three_characters() {
+        for marker in ['-', '_', '*'] {
+            assert!(LlmMarkdownParser::is_thematic_marker(marker));
+        }
+        for marker in ['+', '=', '#', 'a'] {
+            assert!(!LlmMarkdownParser::is_thematic_marker(marker));
+        }
+    }
+
+    #[test]
+    fn block_events_are_told_apart_from_inline_ones() {
+        assert!(LlmMarkdownParser::is_block_event(&Event::BlockquoteStart));
+        assert!(LlmMarkdownParser::is_block_event(&Event::ThematicBreak));
+        assert!(!LlmMarkdownParser::is_block_event(&Event::BoldStart));
+        assert!(!LlmMarkdownParser::is_block_event(&Event::Text(
+            "x".to_string()
+        )));
+    }
+
+    #[test]
+    fn table_events_are_told_apart_from_other_block_events() {
+        assert!(LlmMarkdownParser::is_table_event(&Event::TableRowStart));
+        assert!(LlmMarkdownParser::is_table_event(&Event::TableCellEnd));
+        assert!(!LlmMarkdownParser::is_table_event(&Event::BlockquoteStart));
+    }
+
+    #[test]
+    fn an_inline_reparse_stops_when_the_budget_runs_out() {
+        let mut parser = LlmMarkdownParser::new();
+        parser.reparse_budget = 0;
+
+        let events = parser.parse_inline("**bold**");
+        assert_eq!(events, vec![Event::Text("**bold**".to_string())]);
+    }
+
+    #[test]
+    fn an_inline_reparse_of_nothing_produces_nothing() {
+        let mut parser = LlmMarkdownParser::new();
+        assert!(parser.parse_inline("").is_empty());
+    }
+
+    #[test]
+    fn an_inline_reparse_stops_at_the_recursion_limit() {
+        let mut parser = LlmMarkdownParser::new();
+        parser.reparse_budget = 1024;
+        parser.depth = 0;
+
+        let events = parser.parse_inline("*i*");
+        assert_eq!(events, vec![Event::Text("*i*".to_string())]);
+    }
+
+    #[test]
+    fn the_list_indent_grows_with_the_open_lists() {
+        let mut parser = LlmMarkdownParser::new();
+        assert_eq!(parser.list_indent(), 0);
+
+        parser.open_containers.push(super::Container::Blockquote);
+        assert_eq!(parser.list_indent(), 0);
+
+        parser
+            .open_containers
+            .push(super::Container::List { ordered: false });
+        assert_eq!(parser.list_indent(), 2);
+
+        parser
+            .open_containers
+            .push(super::Container::List { ordered: true });
+        assert_eq!(parser.list_indent(), 4);
+    }
+}

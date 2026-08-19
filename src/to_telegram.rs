@@ -724,3 +724,173 @@ pub fn process_llm_markdown_sync(
 
     split_message_with_entities(&text, &entities, limit)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        BuildState, Event, MessageEntity, Script, apply_script, is_block_mappable, label_is_empty,
+        split_message_with_entities, to_subscript, to_superscript,
+    };
+
+    fn state() -> BuildState {
+        BuildState {
+            text: String::new(),
+            entities: Vec::new(),
+            active_stack: Vec::new(),
+            current_utf16_offset: 0,
+        }
+    }
+
+    #[test]
+    fn digits_and_letters_map_to_scripts() {
+        assert_eq!(to_superscript('2'), Some('²'));
+        assert_eq!(to_superscript('n'), Some('ⁿ'));
+        assert_eq!(to_subscript('2'), Some('₂'));
+        assert_eq!(to_subscript('x'), Some('ₓ'));
+    }
+
+    #[test]
+    fn characters_without_a_script_form_map_to_nothing() {
+        for character in ['q', 'C', 'F', 'ж', '😀', '/'] {
+            assert_eq!(to_superscript(character), None);
+        }
+        for character in ['b', 'z', 'Q', 'ж', '😀', '/'] {
+            assert_eq!(to_subscript(character), None);
+        }
+    }
+
+    #[test]
+    fn the_innermost_script_decides_how_text_is_mapped() {
+        assert_eq!(apply_script(&[], "x2"), "x2");
+        assert_eq!(apply_script(&[Some(Script::Super)], "12"), "¹²");
+        assert_eq!(apply_script(&[Some(Script::Sub)], "12"), "₁₂");
+        assert_eq!(
+            apply_script(&[Some(Script::Super), Some(Script::Sub)], "1"),
+            "₁"
+        );
+        assert_eq!(apply_script(&[Some(Script::Super), None], "1"), "¹");
+    }
+
+    #[test]
+    fn unmappable_characters_pass_through_a_script() {
+        assert_eq!(apply_script(&[Some(Script::Super)], "qC"), "qC");
+    }
+
+    #[test]
+    fn a_block_is_mappable_only_when_every_character_is() {
+        let mappable = [
+            Event::Text("12".to_string()),
+            Event::SuperscriptEnd,
+            Event::Text("rest".to_string()),
+        ];
+        assert!(is_block_mappable(&mappable, 0, true));
+
+        let unmappable = [Event::Text("1q".to_string()), Event::SuperscriptEnd];
+        assert!(!is_block_mappable(&unmappable, 0, true));
+    }
+
+    #[test]
+    fn an_unclosed_script_is_not_mappable() {
+        let events = [Event::Text("12".to_string())];
+        assert!(!is_block_mappable(&events, 0, true));
+    }
+
+    #[test]
+    fn a_nested_script_is_closed_by_its_own_end() {
+        let events = [
+            Event::SuperscriptStart,
+            Event::Text("1".to_string()),
+            Event::SuperscriptEnd,
+            Event::Text("2".to_string()),
+            Event::SuperscriptEnd,
+        ];
+        assert!(is_block_mappable(&events, 0, true));
+    }
+
+    #[test]
+    fn a_label_is_empty_when_it_holds_no_visible_text() {
+        assert!(label_is_empty(&[Event::LinkEnd], 0));
+        assert!(label_is_empty(
+            &[Event::Text("   ".to_string()), Event::LinkEnd],
+            0
+        ));
+        assert!(!label_is_empty(
+            &[Event::Text("alt".to_string()), Event::LinkEnd],
+            0
+        ));
+    }
+
+    #[test]
+    fn an_unterminated_label_counts_as_empty() {
+        assert!(label_is_empty(&[Event::BoldStart], 0));
+    }
+
+    #[test]
+    fn text_is_measured_in_utf16_units() {
+        let mut build = state();
+        build.push_text("ж😀");
+        assert_eq!(build.current_utf16_offset, 3);
+    }
+
+    #[test]
+    fn closing_an_entity_that_was_never_opened_does_nothing() {
+        let mut build = state();
+        build.push_text("text");
+        build.close_entity("bold");
+        assert!(build.entities.is_empty());
+    }
+
+    #[test]
+    fn an_entity_covering_nothing_is_dropped() {
+        let mut build = state();
+        build.open_entity("bold", None, None);
+        build.close_entity("bold");
+        assert!(build.entities.is_empty());
+    }
+
+    #[test]
+    fn popping_a_newline_clips_the_entities_that_covered_it() {
+        let mut build = state();
+        build.open_entity("pre", None, None);
+        build.push_text("code\n");
+        build.close_entity("pre");
+
+        assert!(build.pop_newline());
+        assert_eq!(build.text, "code");
+        assert_eq!(build.entities.len(), 1);
+        assert_eq!(build.entities[0].length, 4);
+    }
+
+    #[test]
+    fn popping_a_newline_that_is_not_there_changes_nothing() {
+        let mut build = state();
+        build.push_text("code");
+        assert!(!build.pop_newline());
+        assert_eq!(build.text, "code");
+    }
+
+    #[test]
+    fn splitting_empty_text_produces_no_chunks() {
+        assert!(split_message_with_entities("", &[], 10).is_empty());
+    }
+
+    #[test]
+    fn an_entity_is_clipped_to_the_chunk_that_holds_it() {
+        let entity = MessageEntity {
+            r#type: "bold".to_string(),
+            offset: 0,
+            length: 10,
+            url: None,
+            language: None,
+        };
+        let chunks = split_message_with_entities("abcdefghij", &[entity], 4);
+
+        assert_eq!(chunks.len(), 3);
+        for (chunk, entities) in &chunks {
+            let length = i64::try_from(chunk.encode_utf16().count()).expect("a small length");
+            assert_eq!(entities.len(), 1);
+            assert_eq!(entities[0].offset, 0);
+            assert_eq!(entities[0].length, length);
+        }
+    }
+}
