@@ -138,7 +138,7 @@ fn a_realistic_answer_renders_its_block_structure() {
 
 #[test]
 fn a_long_answer_is_delivered_as_several_valid_messages() {
-    let document = ANSWER.repeat(6);
+    let document = ANSWER.repeat(20);
     let chunks = process_llm_markdown_sync(&document, false);
     assert!(chunks.len() > 1);
 

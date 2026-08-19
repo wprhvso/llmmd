@@ -14,7 +14,9 @@ def run(
     *args: str,
     stdin: bytes = b"",
 ) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run([*MODULE, *args], input=stdin, capture_output=True, check=False)
+    return subprocess.run(
+        [*MODULE, *args], input=stdin, capture_output=True, check=False
+    )
 
 
 def test_help_exits_cleanly() -> None:
@@ -55,7 +57,9 @@ def test_a_directory_is_reported_without_a_traceback(tmp_path: Path) -> None:
     assert b"Traceback" not in result.stderr
 
 
-def test_a_file_that_is_not_utf8_is_reported_without_a_traceback(tmp_path: Path) -> None:
+def test_a_file_that_is_not_utf8_is_reported_without_a_traceback(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "broken.md"
     path.write_bytes(b"\xff\xfe\x00binary")
 

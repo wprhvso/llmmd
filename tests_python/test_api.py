@@ -47,7 +47,9 @@ def test_the_markdown_argument_must_be_a_string() -> None:
 
 def test_the_photo_flag_can_be_passed_by_keyword() -> None:
     markdown = "word " * 1000
-    assert process_markdown(markdown, with_photo=True) == process_markdown(markdown, True)
+    assert process_markdown(markdown, with_photo=True) == process_markdown(
+        markdown, True
+    )
 
 
 def test_calling_without_arguments_is_an_error() -> None:
