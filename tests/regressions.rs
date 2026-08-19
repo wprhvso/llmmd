@@ -306,3 +306,55 @@ fn an_ordered_list_keeps_the_number_it_starts_at() {
 
     assert_eq!(text("3. a\n9. b\n"), "3. a\n4. b\n");
 }
+
+#[test]
+fn windows_line_endings_render_like_unix_ones() {
+    let documents = [
+        "# Heading\n\nA **bold** word.\n",
+        "- a\n- b\n  - c\n",
+        "```python\nprint(1)\n```\n",
+        "> quote\n> more\n",
+        "| a | b |\n|---|---|\n| 1 | 2 |\n",
+        "text\n\nmore text\n",
+    ];
+    for document in documents {
+        let windows = document.replace('\n', "\r\n");
+        assert_eq!(
+            render(&windows),
+            render(document),
+            "{document:?} rendered differently with CRLF line endings"
+        );
+    }
+}
+
+#[test]
+fn a_carriage_return_never_reaches_the_message_text() {
+    for document in ["a\r\nb\r\n", "# h\r\n", "**b**\r\n", "a\rb\r"] {
+        let (text, entities) = render(document);
+        assert!(
+            !text.contains('\r'),
+            "{document:?} kept a carriage return in {text:?}"
+        );
+        assert_entities_valid(&text, &entities);
+    }
+}
+
+#[test]
+fn a_lone_carriage_return_breaks_the_line() {
+    assert_eq!(render("a\rb").0, "a\nb");
+}
+
+#[test]
+fn a_link_without_a_label_shows_its_url_inside_a_table() {
+    let text = render("| a |\n|---|\n| [](https://e.com/x) |\n").0;
+    assert!(
+        text.contains("https://e.com/x"),
+        "the url disappeared from the table: {text:?}"
+    );
+}
+
+#[test]
+fn a_link_inside_a_table_keeps_its_label() {
+    let text = render("| a |\n|---|\n| [label](https://e.com/x) |\n").0;
+    assert!(text.contains("label"), "the label disappeared: {text:?}");
+}

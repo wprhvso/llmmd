@@ -144,3 +144,12 @@ def test_a_huge_document_is_processed() -> None:
     assert len(chunks) > 1
     for chunk in chunks:
         assert utf16_len(chunk["text"]) <= MESSAGE_LIMIT
+
+
+def test_windows_line_endings_are_normalised() -> None:
+    markdown = "# T\n\n**b**\n\n- a\n- b\n"
+    assert process_markdown(markdown.replace("\n", "\r\n")) == process_markdown(
+        markdown
+    )
+    for chunk in process_markdown(markdown.replace("\n", "\r\n")):
+        assert "\r" not in chunk["text"]

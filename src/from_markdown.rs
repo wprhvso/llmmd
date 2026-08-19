@@ -206,6 +206,7 @@ pub struct LlmMarkdownParser {
     last_line_event_index: usize,
     in_table: bool,
     skip_math_newline: bool,
+    pending_carriage_return: bool,
     block_floor: usize,
     depth: u16,
     reparse_budget: usize,
@@ -243,6 +244,7 @@ impl LlmMarkdownParser {
             last_line_event_index: 0,
             in_table: false,
             skip_math_newline: false,
+            pending_carriage_return: false,
             block_floor: 0,
             depth: INLINE_RECURSION_LIMIT,
             reparse_budget: 0,
@@ -527,6 +529,22 @@ impl LlmMarkdownParser {
         }
     }
 
+    fn normalize_newlines(&mut self, chunk: &str) -> String {
+        let mut normalized = String::with_capacity(chunk.len());
+        for character in chunk.chars() {
+            if character == '\r' {
+                self.pending_carriage_return = true;
+                normalized.push('\n');
+            } else if character == '\n' && self.pending_carriage_return {
+                self.pending_carriage_return = false;
+            } else {
+                self.pending_carriage_return = false;
+                normalized.push(character);
+            }
+        }
+        normalized
+    }
+
     fn is_delimiter_row(s: &str) -> bool {
         let s = s.trim();
         if s.is_empty() || !s.contains('|') || !s.contains('-') {
@@ -630,6 +648,8 @@ impl LlmMarkdownParser {
                 .reparse_budget
                 .saturating_add(chunk.len().saturating_mul(INLINE_REPARSE_BUDGET_PER_CHAR));
         }
+
+        let chunk = self.normalize_newlines(chunk);
 
         for c in chunk.chars() {
             let mut process_as_text = false;

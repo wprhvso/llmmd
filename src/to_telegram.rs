@@ -410,7 +410,7 @@ impl TelegramEntityBuilder {
                         if scripts.pop() == Some(None) {
                             table_state.current_cell.push_str("</sub>");
                         },
-                    Event::ImageStart { url } => {
+                    Event::ImageStart { url } | Event::LinkStart { url } => {
                         if label_is_empty(&self.resolved_events, i.saturating_add(1)) {
                             table_state.current_cell.push_str(url);
                         }
