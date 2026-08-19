@@ -344,7 +344,6 @@ impl TelegramEntityBuilder {
 
                         let rendered = table.to_string();
                         if !rendered.is_empty() {
-
                             if !state.text.is_empty() && !state.text.ends_with('\n') {
                                 state.push_text("\n");
                             }
@@ -490,7 +489,6 @@ impl TelegramEntityBuilder {
                     }
                     link_depth = link_depth.saturating_add(1);
                     if label_is_empty(&self.resolved_events, i.saturating_add(1)) {
-
                         state.push_text(url);
                     }
                 }
@@ -656,7 +654,6 @@ pub fn split_message_with_entities(
             }
 
             if cut == 0 {
-
                 let starts_pair = utf16_chars
                     .get(current_start)
                     .is_some_and(|&unit| (0xD800..=0xDBFF).contains(&unit));
@@ -728,8 +725,16 @@ pub fn process_llm_markdown_sync(
 #[cfg(test)]
 mod tests {
     use super::{
-        BuildState, Event, MessageEntity, Script, apply_script, is_block_mappable, label_is_empty,
-        split_message_with_entities, to_subscript, to_superscript,
+        BuildState,
+        Event,
+        MessageEntity,
+        Script,
+        apply_script,
+        is_block_mappable,
+        label_is_empty,
+        split_message_with_entities,
+        to_subscript,
+        to_superscript,
     };
 
     fn state() -> BuildState {
@@ -837,7 +842,7 @@ mod tests {
         let mut build = state();
         build.push_text("text");
         build.close_entity("bold");
-        assert!(build.entities.is_empty());
+        assert_eq!(build.entities, Vec::new());
     }
 
     #[test]
@@ -845,7 +850,7 @@ mod tests {
         let mut build = state();
         build.open_entity("bold", None, None);
         build.close_entity("bold");
-        assert!(build.entities.is_empty());
+        assert_eq!(build.entities, Vec::new());
     }
 
     #[test]
@@ -871,7 +876,7 @@ mod tests {
 
     #[test]
     fn splitting_empty_text_produces_no_chunks() {
-        assert!(split_message_with_entities("", &[], 10).is_empty());
+        assert_eq!(split_message_with_entities("", &[], 10), Vec::new());
     }
 
     #[test]

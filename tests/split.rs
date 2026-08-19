@@ -1,4 +1,3 @@
-
 mod common;
 
 use _native::to_telegram::{MessageEntity, process_llm_markdown_sync, split_message_with_entities};
@@ -118,7 +117,6 @@ fn splitting_prefers_a_newline_then_a_space() {
 
 #[test]
 fn a_surrogate_pair_is_never_cut_in_half() {
-
     for limit in 2..40_usize {
         let text = "😀".repeat(40);
         let chunks = split_message_with_entities(&text, &[], limit);
@@ -239,7 +237,6 @@ fn process_keeps_entities_inside_their_chunk() {
 
 #[test]
 fn whitespace_only_chunks_are_not_emitted() {
-
     let text = format!("{}\n\n\n", "a".repeat(100));
     let chunks = split_message_with_entities(&text, &[], 100);
     assert_lossless(&text, &chunks);
@@ -249,7 +246,6 @@ fn whitespace_only_chunks_are_not_emitted() {
 
 #[test]
 fn an_early_line_break_does_not_produce_a_tiny_chunk() {
-
     let text = format!("\n{}", "a".repeat(300));
     let chunks = split_message_with_entities(&text, &[], 100);
     assert_lossless(&text, &chunks);

@@ -1,4 +1,3 @@
-
 mod common;
 
 use _native::from_markdown::Event;
@@ -55,7 +54,6 @@ fn bold_italic_and_bold_italic() {
 
 #[test]
 fn underscore_emphasis_is_not_applied_inside_words() {
-
     assert_eq!(text_of("a_b_c"), "a_b_c");
     assert!(!events("a_b_c").contains(&Event::ItalicStart));
 
@@ -150,7 +148,6 @@ fn currency_amounts_are_not_math() {
 
 #[test]
 fn closing_math_delimiter_needs_non_space_before_it() {
-
     assert_eq!(text_of("a $x $ y"), "a $x $ y");
     assert!(
         !events("a $x $ y")
@@ -214,7 +211,6 @@ fn bang_without_bracket_stays_literal() {
 
 #[test]
 fn nested_inline_content_is_not_duplicated() {
-
     assert_eq!(
         events("**bold with `code` inside**"),
         vec![
@@ -256,7 +252,6 @@ fn nested_inline_content_is_not_duplicated() {
 
 #[test]
 fn deeply_nested_emphasis_terminates() {
-
     let depth = 200;
     let markdown = format!("{}x{}", "*".repeat(depth), "*".repeat(depth));
     let rendered = text_of(&markdown);
@@ -265,7 +260,6 @@ fn deeply_nested_emphasis_terminates() {
 
 #[test]
 fn html_like_text_is_preserved_verbatim() {
-
     assert_eq!(text_of("x < y"), "x < y");
     assert_eq!(text_of("a <b c>d"), "a <b c>d");
     assert_eq!(text_of("a <verylongtag>b"), "a <verylongtag>b");
@@ -296,7 +290,6 @@ fn superscript_and_subscript_events() {
 
 #[test]
 fn trailing_delimiters_are_never_swallowed() {
-
     assert_eq!(text_of("abc ###"), "abc ###");
     assert_eq!(text_of("###"), "###");
     assert_eq!(text_of("abc `"), "abc `");
@@ -309,7 +302,6 @@ fn trailing_delimiters_are_never_swallowed() {
 
 #[test]
 fn rollback_counts_match_the_events_they_undo() {
-
     for markdown in [
         "**b**",
         "a `c` b",

@@ -2,13 +2,18 @@ mod common;
 
 use _native::to_telegram::{MessageEntity, process_llm_markdown_sync};
 use common::{
-    actions, assert_entities_valid, balanced_pairs, corpus, corpus_seeded, render, resolve,
+    actions,
+    assert_entities_valid,
+    balanced_pairs,
+    corpus,
+    corpus_seeded,
+    render,
+    resolve,
 };
 
 #[test]
 fn random_markup_soup_never_panics_and_keeps_entities_valid() {
     for document in corpus(4000) {
-
         let _ = resolve(actions(&document));
 
         let (text, entities) = render(&document);
@@ -35,7 +40,6 @@ fn random_markup_soup_survives_the_public_entry_point() {
 
 #[test]
 fn plain_prose_is_reproduced_byte_for_byte() {
-
     let documents = [
         "just some words",
         "line one\nline two\nline three\n",
@@ -51,7 +55,6 @@ fn plain_prose_is_reproduced_byte_for_byte() {
 
 #[test]
 fn every_text_character_of_a_document_reaches_the_output() {
-
     let document = "\
 # Heading one
 
@@ -106,7 +109,6 @@ fn rendering_is_deterministic() {
 
 #[test]
 fn no_speculative_start_event_survives_without_its_end() {
-
     let pairs = balanced_pairs();
 
     for seed in 0..24_u64 {

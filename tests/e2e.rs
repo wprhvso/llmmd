@@ -71,7 +71,7 @@ fn entity_covering<'a>(
 fn a_realistic_answer_keeps_its_entities_valid() {
     let (text, entities) = only_chunk(ANSWER);
     assert_entities_valid(&text, &entities);
-    assert!(!entities.is_empty());
+    assert_ne!(entities.len(), 0);
 }
 
 #[test]
@@ -144,7 +144,7 @@ fn a_long_answer_is_delivered_as_several_valid_messages() {
 
     for (text, entities) in &chunks {
         assert!(text.encode_utf16().count() <= 4096);
-        assert!(!text.trim().is_empty());
+        assert_ne!(text.trim(), "");
         assert_entities_valid(text, entities);
     }
 }
@@ -152,7 +152,7 @@ fn a_long_answer_is_delivered_as_several_valid_messages() {
 #[test]
 fn a_photo_caption_uses_the_smaller_limit() {
     let chunks = process_llm_markdown_sync(ANSWER, true);
-    assert!(!chunks.is_empty());
+    assert_ne!(chunks.len(), 0);
 
     for (text, entities) in &chunks {
         assert!(text.encode_utf16().count() <= 1024);

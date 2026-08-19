@@ -1,11 +1,9 @@
-
 mod common;
 
 use _native::from_markdown::Event;
 use common::{assert_balanced, assert_entities_valid, events, render, text};
 
 fn assert_well_formed(markdown: &str) {
-
     assert_balanced(markdown);
 
     let (rendered, entities) = render(markdown);
@@ -14,7 +12,6 @@ fn assert_well_formed(markdown: &str) {
 
 #[test]
 fn nested_markup_is_not_duplicated_by_the_inner_reparse() {
-
     assert_eq!(
         text("*italic with [l](http://a.b) here*"),
         "italic with l here"
@@ -24,7 +21,6 @@ fn nested_markup_is_not_duplicated_by_the_inner_reparse() {
 
 #[test]
 fn a_closing_delimiter_reaches_the_enclosing_speculation() {
-
     assert_eq!(text("**a `b` c**"), "a b c");
     assert_eq!(text("**a $x$ b**"), "a x b");
     assert_eq!(text("**a \\(x\\) b**"), "a x b");
@@ -44,7 +40,6 @@ fn trailing_markers_at_end_of_input_are_not_swallowed() {
 
 #[test]
 fn an_unterminated_link_destination_does_not_grow_a_newline() {
-
     assert_eq!(text("a [b](http"), "a [b](http");
 }
 
@@ -74,7 +69,6 @@ fn images_are_rendered_as_links_instead_of_being_dropped() {
 
 #[test]
 fn trimming_the_trailing_newline_does_not_leave_entities_dangling() {
-
     assert_well_formed("> quoted\n```");
     assert_well_formed("> a\n$$");
     let (rendered, entities) = render("> quoted\n```");
@@ -83,7 +77,6 @@ fn trimming_the_trailing_newline_does_not_leave_entities_dangling() {
 
 #[test]
 fn a_speculation_never_resolves_across_a_block_boundary() {
-
     assert_eq!(text("**a\n\n# h\n\nb**"), "**a\n\n# h\n\nb**");
     assert_eq!(text("> ||a\n\nb||"), "||a\n\nb||");
     assert_well_formed("***1) \n1. #||\\(<u>***    ~~| a |+[1]   1) ---");
@@ -133,7 +126,6 @@ fn plus_is_a_bullet_marker_not_a_thematic_break() {
 
 #[test]
 fn a_table_row_starting_with_digits_keeps_its_first_cell() {
-
     let rendered = text("Year | Revenue\n-----|--------\n2024 | 100\n2025 | 200\n");
     assert!(rendered.contains("2024"), "{rendered}");
     assert!(rendered.contains("2025"), "{rendered}");
@@ -242,7 +234,6 @@ fn a_surrogate_pair_survives_message_splitting() {
 
 #[test]
 fn deeply_nested_inline_markup_finishes_quickly() {
-
     let depth = 200;
     let markdown = format!("{}x{}", "[".repeat(depth), "](u)".repeat(depth));
     let rendered = text(&markdown);
@@ -254,7 +245,6 @@ fn deeply_nested_inline_markup_finishes_quickly() {
 
 #[test]
 fn an_empty_link_or_image_label_falls_back_to_the_url() {
-
     for markdown in ["[](https://e.com)", "![](https://e.com)"] {
         let (rendered, entities) = render(markdown);
         assert_eq!(rendered, "https://e.com", "{markdown:?}");
@@ -265,7 +255,6 @@ fn an_empty_link_or_image_label_falls_back_to_the_url() {
 
 #[test]
 fn an_image_inside_a_link_yields_one_link_entity() {
-
     let (rendered, entities) = render("[![alt](https://i/x.png)](https://e.com)");
     assert_eq!(rendered, "alt");
     assert_eq!(entities.len(), 1, "{entities:?}");
@@ -274,7 +263,6 @@ fn an_image_inside_a_link_yields_one_link_entity() {
 
 #[test]
 fn nested_blockquotes_produce_a_single_entity() {
-
     let (rendered, entities) = render("> a\n> > b\n");
     assert_eq!(rendered, "a\nb\n");
     assert_eq!(
@@ -289,14 +277,12 @@ fn nested_blockquotes_produce_a_single_entity() {
 
 #[test]
 fn the_innermost_script_wins_over_an_enclosing_one() {
-
     assert_eq!(text("x<sup>a<sub>2</sub></sup>"), "xᵃ₂");
     assert_eq!(text("x<sub>a<sup>2</sup></sub>"), "xₐ²");
 }
 
 #[test]
 fn display_math_does_not_start_with_a_blank_line() {
-
     let (rendered, entities) = render("$$\nx = 1\n$$\n");
     assert_eq!(rendered, "x = 1\n");
     let pre = entities
@@ -313,7 +299,6 @@ fn display_math_does_not_start_with_a_blank_line() {
 
 #[test]
 fn an_ordered_list_keeps_the_number_it_starts_at() {
-
     assert_eq!(text("3. a\n4. b\n"), "3. a\n4. b\n");
     assert_eq!(text("5. only\n"), "5. only\n");
     assert_eq!(text("1. a\n2. b\n"), "1. a\n2. b\n");

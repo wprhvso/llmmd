@@ -1,8 +1,17 @@
 mod common;
 
 use common::{
-    Rng, actions, actions_at_boundaries, assert_entities_valid, corpus_seeded, events_chunked,
-    merge_text, render, render_actions, render_chunked, resolve,
+    Rng,
+    actions,
+    actions_at_boundaries,
+    assert_entities_valid,
+    corpus_seeded,
+    events_chunked,
+    merge_text,
+    render,
+    render_actions,
+    render_chunked,
+    resolve,
 };
 
 const CHUNK_SIZES: &[usize] = &[1, 2, 3, 4, 5, 7, 11, 17, 64, 1024];
@@ -59,7 +68,9 @@ fn a_document_renders_the_same_at_random_split_points() {
         let length = document.chars().count();
         let whole = render(&document);
         for _ in 0..4 {
-            let cuts: Vec<usize> = (0..4).map(|_| rng.below(length.saturating_add(1))).collect();
+            let cuts: Vec<usize> = (0..4)
+                .map(|_| rng.below(length.saturating_add(1)))
+                .collect();
             let rendered = render_actions(actions_at_boundaries(&document, &cuts));
             assert_eq!(
                 rendered, whole,

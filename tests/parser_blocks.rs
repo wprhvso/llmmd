@@ -1,4 +1,3 @@
-
 mod common;
 
 use _native::from_markdown::{Event, TaskStatus};
@@ -197,7 +196,6 @@ fn code_fence_content_is_not_interpreted() {
 
 #[test]
 fn unterminated_fence_keeps_its_language() {
-
     assert_eq!(
         events("```rust"),
         vec![Event::CodeBlockStart("rust".into()), Event::CodeBlockEnd,]
@@ -214,7 +212,6 @@ fn unterminated_fence_keeps_its_language() {
 
 #[test]
 fn partial_closing_fence_stays_in_the_body() {
-
     assert_eq!(
         events("```\ncode\n``"),
         vec![
@@ -354,7 +351,6 @@ fn containers_are_always_balanced() {
 
 #[test]
 fn chunked_input_matches_a_single_chunk() {
-
     let documents = [
         "# Title\n\nHello **bold** and *italic*.\n",
         "- a\n- b\n  - c\n",

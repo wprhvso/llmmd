@@ -1,4 +1,3 @@
-
 mod common;
 
 use common::{assert_entities_valid, render, slice_utf16, spans, text};
@@ -40,7 +39,6 @@ fn entity_offsets_point_at_the_right_substring() {
 
 #[test]
 fn offsets_are_utf16_units_not_bytes_or_chars() {
-
     let (rendered, _) = checked("ж😀 **b**");
     assert_eq!(rendered, "ж😀 b");
     assert_eq!(spans("ж😀 **b**", "bold"), vec![(4, 1)]);
@@ -69,7 +67,6 @@ fn links_carry_their_url() {
 
 #[test]
 fn images_keep_their_url_as_a_link() {
-
     let (rendered, entities) = checked("![alt text](https://example.com/a.png)");
     assert_eq!(rendered, "alt text");
     let link = entities
@@ -158,7 +155,6 @@ fn superscript_maps_to_unicode_when_every_character_can() {
 
 #[test]
 fn superscript_falls_back_to_tags_when_it_cannot_map() {
-
     assert_eq!(text("x<sup>Q</sup>"), "x<sup>Q</sup>");
 }
 

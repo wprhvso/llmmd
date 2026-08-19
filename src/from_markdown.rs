@@ -317,7 +317,6 @@ impl LlmMarkdownParser {
 
     fn push_event(&mut self, event: Event, out: &mut Vec<Action>) {
         if Self::is_block_event(&event) {
-
             self.speculations.clear();
 
             if self.in_table && !Self::is_table_event(&event) {
@@ -627,7 +626,6 @@ impl LlmMarkdownParser {
         let mut actions = Vec::new();
 
         if !self.inline_only {
-
             self.reparse_budget = self
                 .reparse_budget
                 .saturating_add(chunk.len().saturating_mul(INLINE_REPARSE_BUDGET_PER_CHAR));
@@ -680,7 +678,6 @@ impl LlmMarkdownParser {
                         } else if (c == ' ' || c == '\t') && quotes_stripped < expected {
                             continue;
                         } else if (c == ' ' || c == '\t') && indent_stripped < self.list_indent() {
-
                             let width = if c == '\t' { 4 } else { 1 };
                             self.prefix_state = PrefixState::StrictScan {
                                 quotes_stripped,
@@ -873,7 +870,6 @@ impl LlmMarkdownParser {
                         if is_lazy || self.current_indent >= 2 {
                             self.line_containers = self.open_containers.clone();
                         } else if c == '\n' && self.prefix_buffer.is_empty() {
-
                             let keep = self
                                 .open_containers
                                 .iter()
@@ -919,7 +915,6 @@ impl LlmMarkdownParser {
                                 self.push_event(Event::BlockquoteStart, &mut actions);
                             }
                             Container::List { ordered } => {
-
                                 let start = if index == innermost {
                                     self.current_list_start
                                 } else {
@@ -960,7 +955,6 @@ impl LlmMarkdownParser {
                     if self.found_thematic_break {
                         self.push_event(Event::ThematicBreak, &mut actions);
                     } else {
-
                         let failed = std::mem::take(&mut self.prefix_buffer);
                         for fc in failed.chars() {
                             self.current_line_raw.push(fc);
@@ -1006,7 +1000,6 @@ impl LlmMarkdownParser {
                             && Self::is_delimiter_row(&self.current_line_raw)
                             && Self::is_table_row(&self.last_line_raw)
                             && self.state == State::NormalText
-
                             && self.last_line_event_index >= self.block_floor
                         {
                             let rollback_count = self
@@ -1048,7 +1041,6 @@ impl LlmMarkdownParser {
                             }
                         }
                     } else if self.in_table && !next_in_strict {
-
                         self.in_table = false;
                         self.push_event(Event::TableEnd, &mut actions);
                     }
@@ -1160,7 +1152,6 @@ impl LlmMarkdownParser {
         self.flush_text(&mut actions);
 
         if self.in_table {
-
             if self.state == State::NormalText && Self::is_table_row(&self.current_line_raw) {
                 let rollback_count = self
                     .global_event_counter
@@ -1338,13 +1329,12 @@ impl LlmMarkdownParser {
                     kind,
                     spec_idx,
                     mut url,
-                } => {
+                } =>
                     if c == ')' {
                         self.buffer.push(')');
                         self.resolve_link(spec_idx, &url, kind, out);
                         self.state = State::NormalText;
                     } else if c.is_whitespace() {
-
                         self.abort_speculation(spec_idx);
                         self.state = State::NormalText;
                         reprocess = true;
@@ -1357,12 +1347,10 @@ impl LlmMarkdownParser {
                             spec_idx,
                             url,
                         };
-                    }
-                }
+                    },
 
                 State::CheckingHtmlTag { mut tag } => {
                     if c != '>' && (c.is_whitespace() || tag.len() >= MAX_HTML_TAG_LEN) {
-
                         self.buffer.push_str(&tag);
                         self.flush_text(out);
                         self.state = State::NormalText;
@@ -1546,7 +1534,7 @@ impl LlmMarkdownParser {
                 State::CheckingBackticks {
                     count,
                     is_line_start,
-                } => {
+                } =>
                     if c == '`' {
                         self.state = State::CheckingBackticks {
                             count: count.saturating_add(1),
@@ -1561,7 +1549,6 @@ impl LlmMarkdownParser {
                         let delim = "`".repeat(usize::from(count));
                         let kind = SpeculationKind::Code(count);
                         if self.has_speculation(kind) {
-
                             self.buffer.push_str(&delim);
                             self.resolve_speculation(kind, &delim, &delim, out);
                         } else {
@@ -1571,10 +1558,9 @@ impl LlmMarkdownParser {
                         }
                         self.state = State::NormalText;
                         reprocess = true;
-                    }
-                }
+                    },
 
-                State::CheckingDollar { char_before } => {
+                State::CheckingDollar { char_before } =>
                     if c == '$' && !self.inline_only {
                         self.push_event(
                             Event::DisplayMathStart {
@@ -1585,7 +1571,6 @@ impl LlmMarkdownParser {
                         self.skip_math_newline = true;
                         self.state = State::InsideDisplayMathDollar;
                     } else {
-
                         let right_flanking_ok = !char_before.is_whitespace();
                         if right_flanking_ok && self.has_speculation(SpeculationKind::MathDollar) {
                             self.state = State::VerifyInlineMathDollarEnd;
@@ -1598,14 +1583,11 @@ impl LlmMarkdownParser {
                             self.state = State::NormalText;
                         }
                         reprocess = true;
-                    }
-                }
+                    },
 
                 State::VerifyInlineMathDollarEnd => {
-
                     self.buffer.push('$');
                     if c.is_ascii_digit() {
-
                         self.flush_text(out);
                     } else {
                         self.resolve_speculation(SpeculationKind::MathDollar, "$", "$", out);
@@ -1730,7 +1712,6 @@ impl LlmMarkdownParser {
 
                 State::InsideDisplayMathDollar =>
                     if std::mem::take(&mut self.skip_math_newline) && c == '\n' {
-
                     } else if c == '$' {
                         self.flush_text(out);
                         self.state = State::CheckingDisplayMathDollarEnd;
@@ -1755,7 +1736,6 @@ impl LlmMarkdownParser {
 
                 State::InsideDisplayMathBracket =>
                     if std::mem::take(&mut self.skip_math_newline) && c == '\n' {
-
                     } else if c == '\\' {
                         self.flush_text(out);
                         self.state = State::CheckingDisplayMathBracketEnd;
@@ -1867,7 +1847,7 @@ mod tests {
     #[test]
     fn an_inline_reparse_of_nothing_produces_nothing() {
         let mut parser = LlmMarkdownParser::new();
-        assert!(parser.parse_inline("").is_empty());
+        assert_eq!(parser.parse_inline(""), Vec::new());
     }
 
     #[test]

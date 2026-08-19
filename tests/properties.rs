@@ -111,7 +111,7 @@ fn the_public_entry_point_never_returns_an_unusable_chunk() {
         for with_photo in [false, true] {
             let limit = if with_photo { 1024_usize } else { 4096 };
             for (chunk, entities) in process_llm_markdown_sync(&document, with_photo) {
-                assert!(!chunk.trim().is_empty());
+                assert_ne!(chunk.trim(), "");
                 assert!(utf16_len(&chunk) <= limit);
                 assert_entities_valid(&chunk, &entities);
             }
