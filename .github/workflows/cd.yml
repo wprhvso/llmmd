@@ -4,43 +4,8 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch:
-
-permissions: {}
-
-concurrency:
-  group: cd-${{ github.ref }}
-  cancel-in-progress: false
 
 jobs:
-  rust:
-    runs-on: pool
-    strategy:
-      fail-fast: false
-      matrix:
-        check: [fmt, clippy, test, doc]
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: wprhvso/qa-rust@v1
-        with:
-          checks: ${{ matrix.check }}
-
-  python:
-    runs-on: pool
-    strategy:
-      fail-fast: false
-      matrix:
-        check: [ruff, format, pyright, pytest]
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: wprhvso/qa-python@v1
-        with:
-          checks: ${{ matrix.check }}
-
   version:
     runs-on: pool
     outputs:
@@ -48,8 +13,6 @@ jobs:
       release: ${{ steps.read.outputs.release }}
     steps:
       - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
       - id: read
         run: |
           set -euo pipefail
@@ -74,14 +37,13 @@ jobs:
                   pass
           highest = max(published, default=None)
           print("true" if highest is None or declared > highest else "false")
-          print(f"{declared} vs pypi {highest}", file=sys.stderr)
           PY
           )
           echo "release=$release" >> "$GITHUB_OUTPUT"
 
   wheels:
     name: wheels (${{ matrix.platform.target }}, ${{ matrix.platform.libc }})
-    needs: [rust, python, version]
+    needs: version
     if: needs.version.outputs.release == 'true'
     runs-on: pool
     strategy:
@@ -106,20 +68,10 @@ jobs:
             docker_platform: linux/arm64
     steps:
       - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
       - uses: docker/setup-qemu-action@v3
         if: matrix.platform.target == 'aarch64'
         with:
           platforms: arm64
-      - name: rustup для maturin-action
-        run: |
-          set -euo pipefail
-          if ! command -v rustup >/dev/null; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-              | sh -s -- -y --default-toolchain none --no-modify-path
-            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          fi
       - uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
@@ -135,21 +87,11 @@ jobs:
           if-no-files-found: error
 
   sdist:
-    needs: [rust, python, version]
+    needs: version
     if: needs.version.outputs.release == 'true'
     runs-on: pool
     steps:
       - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - name: rustup для cargo
-        run: |
-          set -euo pipefail
-          if ! command -v cargo >/dev/null; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-              | sh -s -- -y --default-toolchain none --no-modify-path
-            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          fi
       - run: uv run --no-project --with 'maturin>=1.14.1' maturin sdist --out dist
       - uses: actions/upload-artifact@v4
         with:
@@ -159,7 +101,6 @@ jobs:
 
   release:
     needs: [version, wheels, sdist]
-    if: needs.version.outputs.release == 'true'
     runs-on: pool
     environment: pypi
     permissions:

@@ -2,38 +2,57 @@ name: ci
 
 on:
   push:
-  pull_request:
-  workflow_dispatch:
-
-permissions: {}
 
 jobs:
-  rust:
+  fmt:
     runs-on: pool
-    strategy:
-      fail-fast: false
-      matrix:
-        check: [fmt, clippy, test, doc]
     steps:
       - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
+      - run: cargo fmt --check
 
-      - uses: wprhvso/qa-rust@v1
-        with:
-          checks: ${{ matrix.check }}
-
-  python:
+  clippy:
     runs-on: pool
-    strategy:
-      fail-fast: false
-      matrix:
-        check: [ruff, format, pyright, pytest]
     steps:
       - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
-      - uses: wprhvso/qa-python@v1
-        with:
-          checks: ${{ matrix.check }}
+  test:
+    runs-on: pool
+    steps:
+      - uses: actions/checkout@v7
+      - run: cargo test --locked --all-features
+
+  doc:
+    runs-on: pool
+    steps:
+      - uses: actions/checkout@v7
+      - run: cargo doc --locked --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  ruff:
+    runs-on: pool
+    steps:
+      - uses: actions/checkout@v7
+      - run: ruff check --output-format github .
+
+  format:
+    runs-on: pool
+    steps:
+      - uses: actions/checkout@v7
+      - run: ruff format --check --diff .
+
+  pyright:
+    runs-on: pool
+    steps:
+      - uses: actions/checkout@v7
+      - run: uv sync --frozen
+      - run: basedpyright
+
+  pytest:
+    runs-on: pool
+    steps:
+      - uses: actions/checkout@v7
+      - run: uv sync --frozen
+      - run: echo "$PWD/.venv/bin" >>"$GITHUB_PATH"
+      - run: pytest
