@@ -13,36 +13,22 @@ jobs:
       release: ${{ steps.read.outputs.release }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
       - id: read
         run: |
-          set -euo pipefail
-          declared=$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)
-          echo "version=$declared" >> "$GITHUB_OUTPUT"
-          crate=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
-          if [ "$declared" != "$crate" ]; then
-            echo "pyproject $declared != Cargo.toml $crate" >&2
-            exit 1
+          version=$(python3 -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
+          crate=$(python3 -c 'import tomllib;print(tomllib.load(open("Cargo.toml","rb"))["package"]["version"])')
+          test "$version" = "$crate"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
           fi
-          curl -fsS https://pypi.org/pypi/llmmd/json -o pypi.json || echo '{}' > pypi.json
-          release=$(uv run --no-project --with packaging python - "$declared" <<'PY'
-          import json, sys
-          from packaging.version import InvalidVersion, Version
-
-          declared = Version(sys.argv[1])
-          published = []
-          for raw in json.load(open("pypi.json")).get("releases", {}):
-              try:
-                  published.append(Version(raw))
-              except InvalidVersion:
-                  pass
-          highest = max(published, default=None)
-          print("true" if highest is None or declared > highest else "false")
-          PY
-          )
-          echo "release=$release" >> "$GITHUB_OUTPUT"
 
   wheels:
-    name: wheels (${{ matrix.platform.target }}, ${{ matrix.platform.libc }})
     needs: version
     if: needs.version.outputs.release == 'true'
     runs-on: pool
@@ -101,6 +87,7 @@ jobs:
 
   release:
     needs: [version, wheels, sdist]
+    if: needs.version.outputs.release == 'true'
     runs-on: pool
     environment: pypi
     permissions:
