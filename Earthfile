@@ -1,13 +1,5 @@
 VERSION 0.8
 
-# Сборка дистрибутивов llmmd.
-#
-# Линтов и настроек QA здесь больше нет: они переехали в два общих экшена —
-# wprhvso/qa-rust (fmt, clippy, test, doc) и wprhvso/qa-python (ruff, format,
-# pyright, pytest), которые и гоняет ci.yml. Локально те же проверки с теми же
-# конфигами запускают `qa-rust` и `uvx qa-python`. Тесты остаются здесь, потому
-# что их удобно прогонять вместе со сборкой колеса.
-
 ARG --global RUST_IMAGE=rustlang/rust:nightly-bookworm
 ARG --global PYTHON_VERSION=3.14
 
@@ -19,12 +11,27 @@ base:
     RUN uv python install $PYTHON_VERSION
     COPY --dir .cargo .
     COPY Cargo.toml Cargo.lock rust-toolchain.toml pyproject.toml uv.lock .
+    COPY README.md LICENSE .
+    COPY clippy.toml rustfmt.toml ruff.toml pyrightconfig.json pytest.ini deny.toml .
     COPY --dir src python tests tests_python .
     RUN uv sync --locked
 
+fmt:
+    FROM +base
+    RUN cargo fmt --check
+
+clippy:
+    FROM +base
+    RUN cargo clippy --locked --all-targets --all-features -- -D warnings
+
 test:
     FROM +base
-    RUN cargo test --locked --workspace --all-features
+    RUN cargo test --locked --all-features
+
+ruff:
+    FROM +base
+    RUN uv run --no-project --with ruff ruff check .
+    RUN uv run --no-project --with ruff ruff format --check --diff .
 
 pytest:
     FROM +base
@@ -43,7 +50,10 @@ wheel:
     SAVE ARTIFACT dist/* AS LOCAL dist/
 
 all:
+    BUILD +fmt
+    BUILD +clippy
     BUILD +test
+    BUILD +ruff
     BUILD +pytest
     BUILD +sdist
     BUILD +wheel
