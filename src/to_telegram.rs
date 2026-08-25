@@ -296,6 +296,37 @@ enum Script {
     Sub,
 }
 
+#[derive(Debug, Default)]
+struct ScriptStack(Vec<Option<Script>>);
+
+impl ScriptStack {
+    fn open(&mut self, events: &[Event], next: usize, script: Script) -> Option<&'static str> {
+        let mappable = is_block_mappable(events, next, script == Script::Super);
+        self.0.push(mappable.then_some(script));
+        if mappable {
+            return None;
+        }
+        Some(match script {
+            Script::Super => SUPERSCRIPT_OPEN,
+            Script::Sub => SUBSCRIPT_OPEN,
+        })
+    }
+
+    fn close(&mut self, script: Script) -> Option<&'static str> {
+        if self.0.pop() != Some(None) {
+            return None;
+        }
+        Some(match script {
+            Script::Super => SUPERSCRIPT_CLOSE,
+            Script::Sub => SUBSCRIPT_CLOSE,
+        })
+    }
+
+    fn apply(&self, text: &str) -> String {
+        apply_script(&self.0, text)
+    }
+}
+
 fn apply_script(scripts: &[Option<Script>], text: &str) -> String {
     match scripts.iter().rev().find_map(|script| *script) {
         Some(Script::Super) => text
@@ -368,7 +399,7 @@ impl TelegramEntityBuilder {
         let mut list_stack: Vec<Option<u64>> = Vec::new();
         let mut table_state = TableState::default();
 
-        let mut scripts: Vec<Option<Script>> = Vec::new();
+        let mut scripts = ScriptStack::default();
 
         let mut link_depth = 0_usize;
         let mut quote_depth = 0_usize;
@@ -431,30 +462,28 @@ impl TelegramEntityBuilder {
                         let cell_text = std::mem::take(&mut table_state.current_cell);
                         table_state.current_row.push(cell_text.trim().to_string());
                     }
-                    Event::SuperscriptStart => {
-                        let mappable =
-                            is_block_mappable(&self.resolved_events, i.saturating_add(1), true);
-                        scripts.push(mappable.then_some(Script::Super));
-                        if !mappable {
-                            table_state.current_cell.push_str(SUPERSCRIPT_OPEN);
+                    Event::SuperscriptStart | Event::SubscriptStart => {
+                        let script = if matches!(event, Event::SuperscriptStart) {
+                            Script::Super
+                        } else {
+                            Script::Sub
+                        };
+                        if let Some(tag) =
+                            scripts.open(&self.resolved_events, i.saturating_add(1), script)
+                        {
+                            table_state.current_cell.push_str(tag);
                         }
                     }
-                    Event::SuperscriptEnd =>
-                        if scripts.pop() == Some(None) {
-                            table_state.current_cell.push_str(SUPERSCRIPT_CLOSE);
-                        },
-                    Event::SubscriptStart => {
-                        let mappable =
-                            is_block_mappable(&self.resolved_events, i.saturating_add(1), false);
-                        scripts.push(mappable.then_some(Script::Sub));
-                        if !mappable {
-                            table_state.current_cell.push_str(SUBSCRIPT_OPEN);
+                    Event::SuperscriptEnd | Event::SubscriptEnd => {
+                        let script = if matches!(event, Event::SuperscriptEnd) {
+                            Script::Super
+                        } else {
+                            Script::Sub
+                        };
+                        if let Some(tag) = scripts.close(script) {
+                            table_state.current_cell.push_str(tag);
                         }
                     }
-                    Event::SubscriptEnd =>
-                        if scripts.pop() == Some(None) {
-                            table_state.current_cell.push_str(SUBSCRIPT_CLOSE);
-                        },
                     Event::ImageStart { url } | Event::LinkStart { url } => {
                         if label_is_empty(&self.resolved_events, i.saturating_add(1)) {
                             table_state.current_cell.push_str(url);
@@ -467,7 +496,7 @@ impl TelegramEntityBuilder {
                         ..
                     } => table_state
                         .current_cell
-                        .push_str(&apply_script(&scripts, string_value)),
+                        .push_str(&scripts.apply(string_value)),
                     _ => {}
                 }
                 continue;
@@ -477,31 +506,29 @@ impl TelegramEntityBuilder {
                 Event::TableStart => {
                     table_state.active = true;
                 }
-                Event::SuperscriptStart => {
-                    let mappable =
-                        is_block_mappable(&self.resolved_events, i.saturating_add(1), true);
-                    scripts.push(mappable.then_some(Script::Super));
-                    if !mappable {
-                        state.push_text(SUPERSCRIPT_OPEN);
+                Event::SuperscriptStart | Event::SubscriptStart => {
+                    let script = if matches!(event, Event::SuperscriptStart) {
+                        Script::Super
+                    } else {
+                        Script::Sub
+                    };
+                    if let Some(tag) =
+                        scripts.open(&self.resolved_events, i.saturating_add(1), script)
+                    {
+                        state.push_text(tag);
                     }
                 }
-                Event::SuperscriptEnd =>
-                    if scripts.pop() == Some(None) {
-                        state.push_text(SUPERSCRIPT_CLOSE);
-                    },
-                Event::SubscriptStart => {
-                    let mappable =
-                        is_block_mappable(&self.resolved_events, i.saturating_add(1), false);
-                    scripts.push(mappable.then_some(Script::Sub));
-                    if !mappable {
-                        state.push_text(SUBSCRIPT_OPEN);
+                Event::SuperscriptEnd | Event::SubscriptEnd => {
+                    let script = if matches!(event, Event::SuperscriptEnd) {
+                        Script::Super
+                    } else {
+                        Script::Sub
+                    };
+                    if let Some(tag) = scripts.close(script) {
+                        state.push_text(tag);
                     }
                 }
-                Event::SubscriptEnd =>
-                    if scripts.pop() == Some(None) {
-                        state.push_text(SUBSCRIPT_CLOSE);
-                    },
-                Event::Text(string_value) => state.push_text(&apply_script(&scripts, string_value)),
+                Event::Text(string_value) => state.push_text(&scripts.apply(string_value)),
                 Event::BoldStart => state.open_entity(EntityKind::Bold, None, None),
                 Event::BoldEnd => state.close_entity(EntityKind::Bold),
                 Event::ItalicStart => state.open_entity(EntityKind::Italic, None, None),
@@ -556,7 +583,7 @@ impl TelegramEntityBuilder {
                 }
                 Event::InlineCode(code) | Event::InlineMath { content: code, .. } => {
                     state.open_entity(EntityKind::Code, None, None);
-                    state.push_text(&apply_script(&scripts, code));
+                    state.push_text(&scripts.apply(code));
                     state.close_entity(EntityKind::Code);
                 }
 
