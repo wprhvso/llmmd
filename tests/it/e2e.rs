@@ -1,10 +1,9 @@
-mod common;
-
 use _native::{
     limits::{CAPTION_LIMIT, MESSAGE_LIMIT},
     to_telegram::{MessageEntity, process_llm_markdown_sync},
 };
-use common::{assert_entities_valid, slice_utf16};
+
+use crate::support::{assert_entities_valid, slice_utf16};
 
 const ANSWER: &str = "\
 # Отчёт

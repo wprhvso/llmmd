@@ -1,7 +1,13 @@
-mod common;
+use _native::to_telegram::process_llm_markdown_sync;
 
-use _native::to_telegram::{MessageEntity, process_llm_markdown_sync};
-use common::{Rng, assert_entities_valid, limit_for, render, render_chunked};
+use crate::support::{
+    Rng,
+    assert_entities_valid,
+    assert_no_partial_overlap,
+    limit_for,
+    render,
+    render_chunked,
+};
 
 const SEEDS: &[&str] = &[
     "# Заголовок\n\nТекст с **жирным**, *курсивом* и `кодом`.\n",
@@ -49,15 +55,6 @@ fn mutate(seed: &str, rng: &mut Rng) -> String {
     characters.into_iter().collect()
 }
 
-fn overlaps_partially(first: &MessageEntity, second: &MessageEntity) -> bool {
-    let first_end = first.offset.saturating_add(first.length);
-    let second_end = second.offset.saturating_add(second.length);
-    let disjoint = first_end <= second.offset || second_end <= first.offset;
-    let nested = (first.offset <= second.offset && second_end <= first_end)
-        || (second.offset <= first.offset && first_end <= second_end);
-    !disjoint && !nested
-}
-
 fn mutants(seed: u64, count: usize) -> Vec<String> {
     let mut rng = Rng::new(seed);
     (0..count)
@@ -74,14 +71,7 @@ fn mutated_documents_keep_their_entities_valid() {
         let (text, entities) = render(&document);
         assert_entities_valid(&text, &entities);
 
-        for (index, first) in entities.iter().enumerate() {
-            for second in entities.get(index.saturating_add(1)..).unwrap_or(&[]) {
-                assert!(
-                    !overlaps_partially(first, second),
-                    "{first:?} and {second:?} overlap partially for {document:?}"
-                );
-            }
-        }
+        assert_no_partial_overlap(&entities, &document);
     }
 }
 

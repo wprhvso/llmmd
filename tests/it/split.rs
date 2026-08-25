@@ -1,9 +1,9 @@
-mod common;
-
 use _native::{
     limits::{CAPTION_LIMIT, MESSAGE_LIMIT},
     to_telegram::{MessageEntity, process_llm_markdown_sync, split_message_with_entities},
 };
+
+use crate::support::utf16_len;
 
 fn entity(kind: &str, offset: i64, length: i64) -> MessageEntity {
     MessageEntity {
@@ -13,10 +13,6 @@ fn entity(kind: &str, offset: i64, length: i64) -> MessageEntity {
         url: None,
         language: None,
     }
-}
-
-fn utf16_len(text: &str) -> usize {
-    text.encode_utf16().count()
 }
 
 fn assert_lossless(text: &str, chunks: &[(String, Vec<MessageEntity>)]) {

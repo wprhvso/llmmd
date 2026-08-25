@@ -416,3 +416,51 @@ pub fn corpus_seeded(seed: u64, count: usize) -> Vec<String> {
 pub fn corpus(count: usize) -> Vec<String> {
     corpus_seeded(0x5EED_1234, count)
 }
+
+#[must_use]
+pub fn utf16_len(text: &str) -> usize {
+    text.encode_utf16().count()
+}
+
+#[must_use]
+pub fn text_of(markdown: &str) -> String {
+    events(markdown)
+        .iter()
+        .filter_map(|event| match event {
+            Event::Text(value) => Some(value.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[must_use]
+pub fn overlaps_partially(first: &MessageEntity, second: &MessageEntity) -> bool {
+    let first_end = first.offset.saturating_add(first.length);
+    let second_end = second.offset.saturating_add(second.length);
+    let disjoint = first_end <= second.offset || second_end <= first.offset;
+    let nested = (first.offset <= second.offset && second_end <= first_end)
+        || (second.offset <= first.offset && first_end <= second_end);
+    !disjoint && !nested
+}
+
+pub fn assert_no_partial_overlap(entities: &[MessageEntity], document: &str) {
+    for (index, first) in entities.iter().enumerate() {
+        for second in entities.get(index.saturating_add(1)..).unwrap_or(&[]) {
+            assert!(
+                !overlaps_partially(first, second),
+                "{first:?} and {second:?} overlap partially for {document:?}"
+            );
+        }
+    }
+}
+
+pub fn checked(markdown: &str) -> (String, Vec<MessageEntity>) {
+    let (rendered, entities) = render(markdown);
+    assert_entities_valid(&rendered, &entities);
+    (rendered, entities)
+}
+
+pub fn assert_well_formed(markdown: &str) {
+    assert_balanced(markdown);
+    checked(markdown);
+}

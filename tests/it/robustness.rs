@@ -1,7 +1,6 @@
-mod common;
-
 use _native::to_telegram::{MessageEntity, process_llm_markdown_sync};
-use common::{
+
+use crate::support::{
     actions,
     assert_entities_valid,
     balanced_pairs,

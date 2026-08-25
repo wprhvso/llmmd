@@ -1,14 +1,6 @@
-mod common;
-
 use _native::from_markdown::Event;
-use common::{assert_balanced, assert_entities_valid, events, render, text};
 
-fn assert_well_formed(markdown: &str) {
-    assert_balanced(markdown);
-
-    let (rendered, entities) = render(markdown);
-    assert_entities_valid(&rendered, &entities);
-}
+use crate::support::{assert_entities_valid, assert_well_formed, events, render, text};
 
 #[test]
 fn nested_markup_is_not_duplicated_by_the_inner_reparse() {

@@ -1,42 +1,29 @@
-mod common;
-
 use _native::{
     limits::{CAPTION_LIMIT, MESSAGE_LIMIT},
-    to_telegram::{MessageEntity, process_llm_markdown_sync, split_message_with_entities},
+    to_telegram::{process_llm_markdown_sync, split_message_with_entities},
 };
-use common::{assert_entities_valid, corpus_seeded, limit_for, render, slice_utf16};
+
+use crate::support::{
+    assert_entities_valid,
+    assert_no_partial_overlap,
+    corpus_seeded,
+    limit_for,
+    render,
+    slice_utf16,
+    utf16_len,
+};
 
 const LIMITS: &[usize] = &[1, 2, 3, 8, 64, CAPTION_LIMIT, MESSAGE_LIMIT];
-
-fn utf16_len(text: &str) -> usize {
-    text.encode_utf16().count()
-}
 
 fn non_whitespace(text: &str) -> String {
     text.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
-fn overlaps_partially(first: &MessageEntity, second: &MessageEntity) -> bool {
-    let first_end = first.offset.saturating_add(first.length);
-    let second_end = second.offset.saturating_add(second.length);
-    let disjoint = first_end <= second.offset || second_end <= first.offset;
-    let nested = (first.offset <= second.offset && second_end <= first_end)
-        || (second.offset <= first.offset && first_end <= second_end);
-    !disjoint && !nested
-}
-
 #[test]
 fn entities_never_partially_overlap() {
     for document in corpus_seeded(0x0BAD_F00D, 1500) {
-        let (text, entities) = render(&document);
-        for (index, first) in entities.iter().enumerate() {
-            for second in entities.get(index.saturating_add(1)..).unwrap_or(&[]) {
-                assert!(
-                    !overlaps_partially(first, second),
-                    "{first:?} and {second:?} overlap partially in {text:?} from {document:?}"
-                );
-            }
-        }
+        let (_, entities) = render(&document);
+        assert_no_partial_overlap(&entities, &document);
     }
 }
 

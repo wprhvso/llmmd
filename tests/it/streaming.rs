@@ -1,6 +1,4 @@
-mod common;
-
-use common::{
+use crate::support::{
     Rng,
     actions,
     actions_at_boundaries,

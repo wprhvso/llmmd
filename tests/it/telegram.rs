@@ -1,12 +1,4 @@
-mod common;
-
-use common::{assert_entities_valid, render, slice_utf16, spans, text};
-
-fn checked(markdown: &str) -> (String, Vec<_native::to_telegram::MessageEntity>) {
-    let (rendered, entities) = render(markdown);
-    assert_entities_valid(&rendered, &entities);
-    (rendered, entities)
-}
+use crate::support::{checked, slice_utf16, spans, text};
 
 #[test]
 fn emphasis_becomes_entities_and_markers_disappear() {

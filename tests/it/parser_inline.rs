@@ -1,17 +1,6 @@
-mod common;
-
 use _native::from_markdown::Event;
-use common::{events, resolve};
 
-fn text_of(markdown: &str) -> String {
-    events(markdown)
-        .iter()
-        .filter_map(|event| match event {
-            Event::Text(value) => Some(value.clone()),
-            _ => None,
-        })
-        .collect()
-}
+use crate::support::{actions, events, resolve, text_of};
 
 #[test]
 fn plain_text_round_trips() {
@@ -314,7 +303,7 @@ fn rollback_counts_match_the_events_they_undo() {
         "$m$ and \\(n\\)",
         "| a | b |\n|---|---|\n| 1 | 2 |\n",
     ] {
-        let resolved = resolve(common::actions(markdown));
+        let resolved = resolve(actions(markdown));
         assert!(
             !resolved.is_empty(),
             "{markdown:?} resolved to nothing at all"

@@ -1,17 +1,6 @@
-mod common;
-
 use _native::from_markdown::{Event, TaskStatus};
-use common::{events, events_chunked, merge_text};
 
-fn text_of(markdown: &str) -> String {
-    events(markdown)
-        .iter()
-        .filter_map(|event| match event {
-            Event::Text(value) => Some(value.clone()),
-            _ => None,
-        })
-        .collect()
-}
+use crate::support::{events, events_chunked, merge_text, text_of};
 
 #[test]
 fn atx_headings() {

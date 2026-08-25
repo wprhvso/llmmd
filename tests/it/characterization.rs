@@ -1,12 +1,10 @@
-mod common;
-
-use common::{actions, actions_chunked, corpus_seeded};
+use crate::support::{actions, actions_chunked, corpus_seeded};
 
 const SEED: u64 = 0x0C0D_E515;
 const DOCUMENTS: usize = 512;
 const CHUNK_SIZES: &[usize] = &[0, 1, 3, 7, 64];
 
-const RECORDED: &str = include_str!("snapshots/action_stream.txt");
+const RECORDED: &str = include_str!("../snapshots/action_stream.txt");
 
 fn absorb(hash: u64, bytes: &[u8]) -> u64 {
     let mut hash = hash;
