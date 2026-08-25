@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use _native::{
     from_markdown::{Action, Event, LlmMarkdownParser},
     limits::{CAPTION_LIMIT, MESSAGE_LIMIT},
