@@ -31,6 +31,15 @@ jobs:
       - uses: actions/checkout@v7
       - run: cargo test --locked --all-features
 
+  deny:
+    runs-on: pool
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - run: cargo deny --all-features check
+
   ruff:
     runs-on: pool
     steps:
