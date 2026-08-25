@@ -42,7 +42,8 @@ fn process_markdown<'py>(
 }
 
 #[pymodule]
-fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
+#[pyo3(name = "_native")]
+fn native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(process_markdown, m)?)?;
     Ok(())
 }
