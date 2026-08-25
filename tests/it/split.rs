@@ -1,13 +1,18 @@
 use _native::{
     limits::{CAPTION_LIMIT, MESSAGE_LIMIT},
-    to_telegram::{MessageEntity, process_llm_markdown_sync, split_message_with_entities},
+    to_telegram::{
+        EntityKind,
+        MessageEntity,
+        process_llm_markdown_sync,
+        split_message_with_entities,
+    },
 };
 
 use crate::support::utf16_len;
 
-fn entity(kind: &str, offset: i64, length: i64) -> MessageEntity {
+fn entity(kind: EntityKind, offset: usize, length: usize) -> MessageEntity {
     MessageEntity {
-        r#type: kind.to_string(),
+        kind,
         offset,
         length,
         url: None,
@@ -40,32 +45,32 @@ fn assert_entities_survive(text: &str, entities: &[MessageEntity], limit: usize)
 
     let units: Vec<u16> = text.encode_utf16().collect();
     let mut base = 0_usize;
-    let mut recovered: Vec<(String, String)> = Vec::new();
+    let mut recovered: Vec<(EntityKind, String)> = Vec::new();
 
     for (chunk, chunk_entities) in &chunks {
         let chunk_units: Vec<u16> = chunk.encode_utf16().collect();
         for chunk_entity in chunk_entities {
-            let offset = usize::try_from(chunk_entity.offset).expect("offset fits");
-            let length = usize::try_from(chunk_entity.length).expect("length fits");
+            let offset = chunk_entity.offset;
+            let length = chunk_entity.length;
             assert!(
                 offset.saturating_add(length) <= chunk_units.len(),
                 "entity {chunk_entity:?} runs past its chunk"
             );
             let covered =
                 String::from_utf16_lossy(chunk_units.get(offset..offset + length).unwrap_or(&[]));
-            recovered.push((chunk_entity.r#type.clone(), covered));
+            recovered.push((chunk_entity.kind, covered));
         }
         base = base.saturating_add(chunk_units.len());
     }
     assert_eq!(base, units.len());
 
     for original in entities {
-        let offset = usize::try_from(original.offset).expect("offset fits");
-        let length = usize::try_from(original.length).expect("length fits");
+        let offset = original.offset;
+        let length = original.length;
         let expected = String::from_utf16_lossy(units.get(offset..offset + length).unwrap_or(&[]));
         let joined: String = recovered
             .iter()
-            .filter(|(kind, _)| *kind == original.r#type)
+            .filter(|(kind, _)| *kind == original.kind)
             .map(|(_, piece)| piece.as_str())
             .collect();
         assert!(
@@ -82,7 +87,8 @@ fn empty_text_yields_no_chunks() {
 
 #[test]
 fn short_text_stays_in_one_chunk() {
-    let chunks = split_message_with_entities("hello", &[entity("bold", 0, 5)], MESSAGE_LIMIT);
+    let chunks =
+        split_message_with_entities("hello", &[entity(EntityKind::Bold, 0, 5)], MESSAGE_LIMIT);
     assert_eq!(chunks.len(), 1);
     assert_eq!(chunks[0].0, "hello");
     assert_eq!(chunks[0].1.len(), 1);
@@ -148,31 +154,37 @@ fn a_limit_smaller_than_the_first_character_still_makes_progress() {
 #[test]
 fn entities_are_clipped_to_their_chunk() {
     let text = format!("{}{}", "a".repeat(100), "b".repeat(100));
-    let entities = vec![entity("bold", 0, 200), entity("italic", 150, 20)];
+    let entities = vec![
+        entity(EntityKind::Bold, 0, 200),
+        entity(EntityKind::Italic, 150, 20),
+    ];
     assert_entities_survive(&text, &entities, 100);
 
     let chunks = split_message_with_entities(&text, &entities, 100);
     assert_eq!(chunks.len(), 2);
-    assert_eq!(chunks[0].1, vec![entity("bold", 0, 100)]);
+    assert_eq!(chunks[0].1, vec![entity(EntityKind::Bold, 0, 100)]);
     assert_eq!(
         chunks[1].1,
-        vec![entity("bold", 0, 100), entity("italic", 50, 20)]
+        vec![
+            entity(EntityKind::Bold, 0, 100),
+            entity(EntityKind::Italic, 50, 20)
+        ]
     );
 }
 
 #[test]
 fn an_entity_entirely_outside_a_chunk_is_dropped() {
     let text = "a".repeat(200);
-    let chunks = split_message_with_entities(&text, &[entity("bold", 150, 10)], 100);
+    let chunks = split_message_with_entities(&text, &[entity(EntityKind::Bold, 150, 10)], 100);
     assert_eq!(chunks[0].1, []);
-    assert_eq!(chunks[1].1, vec![entity("bold", 50, 10)]);
+    assert_eq!(chunks[1].1, vec![entity(EntityKind::Bold, 50, 10)]);
 }
 
 #[test]
 fn entity_urls_and_languages_are_copied_into_every_chunk() {
     let text = "a".repeat(200);
     let source = MessageEntity {
-        r#type: "text_link".to_string(),
+        kind: EntityKind::TextLink,
         offset: 90,
         length: 30,
         url: Some("https://example.com".to_string()),
@@ -188,7 +200,7 @@ fn entity_urls_and_languages_are_copied_into_every_chunk() {
 
 #[test]
 fn zero_length_entities_are_dropped() {
-    let chunks = split_message_with_entities("abc", &[entity("bold", 1, 0)], 10);
+    let chunks = split_message_with_entities("abc", &[entity(EntityKind::Bold, 1, 0)], 10);
     assert_eq!(chunks[0].1, []);
 }
 
@@ -223,8 +235,8 @@ fn process_keeps_entities_inside_their_chunk() {
         for (chunk, entities) in &chunks {
             let units = utf16_len(chunk);
             for chunk_entity in entities {
-                let offset = usize::try_from(chunk_entity.offset).expect("offset fits");
-                let length = usize::try_from(chunk_entity.length).expect("length fits");
+                let offset = chunk_entity.offset;
+                let length = chunk_entity.length;
                 assert!(
                     offset.saturating_add(length) <= units,
                     "entity {chunk_entity:?} escapes its {units}-unit chunk"

@@ -1,6 +1,6 @@
 use _native::{
     limits::{CAPTION_LIMIT, MESSAGE_LIMIT},
-    to_telegram::{process_llm_markdown_sync, split_message_with_entities},
+    to_telegram::{EntityKind, process_llm_markdown_sync, split_message_with_entities},
 };
 
 use crate::support::{
@@ -68,11 +68,11 @@ fn every_chunk_respects_the_limit_and_carries_valid_entities() {
 fn a_split_entity_still_covers_text_it_covered_before() {
     for document in corpus_seeded(0x7E57_1234, 400) {
         let (text, entities) = render(&document);
-        let originals: Vec<(String, String)> = entities
+        let originals: Vec<(EntityKind, String)> = entities
             .iter()
             .map(|entity| {
                 (
-                    entity.r#type.clone(),
+                    entity.kind,
                     non_whitespace(&slice_utf16(&text, entity.offset, entity.length)),
                 )
             })
@@ -85,9 +85,9 @@ fn a_split_entity_still_covers_text_it_covered_before() {
                     assert!(
                         originals
                             .iter()
-                            .any(|(kind, whole)| *kind == entity.r#type && whole.contains(&piece)),
+                            .any(|(kind, whole)| *kind == entity.kind && whole.contains(&piece)),
                         "{entity:?} covers {piece:?} which no original {:?} entity covered at limit {limit} for {document:?}",
-                        entity.r#type
+                        entity.kind
                     );
                 }
             }
@@ -148,7 +148,9 @@ fn a_long_document_is_split_into_deliverable_messages() {
         assert!(utf16_len(chunk) <= MESSAGE_LIMIT);
         assert_entities_valid(chunk, entities);
         assert!(
-            entities.iter().any(|entity| entity.r#type == "bold"),
+            entities
+                .iter()
+                .any(|entity| entity.kind == EntityKind::Bold),
             "every chunk of this document contains bold text"
         );
     }

@@ -1,4 +1,4 @@
-use _native::from_markdown::Event;
+use _native::{from_markdown::Event, to_telegram::EntityKind};
 
 use crate::support::{assert_entities_valid, assert_well_formed, events, render, text};
 
@@ -99,7 +99,7 @@ fn an_unmatched_delimiter_does_not_reach_across_a_blank_line() {
     let (rendered, entities) = render("Use `foo to do X.\n\nThen run `bar` later.");
     assert_eq!(rendered, "Use `foo to do X.\n\nThen run bar later.");
     assert_eq!(entities.len(), 1);
-    assert_eq!(entities[0].r#type, "code");
+    assert_eq!(entities[0].kind, EntityKind::Code);
 }
 
 #[test]
@@ -121,7 +121,7 @@ fn a_blank_line_does_not_restart_list_numbering() {
     assert_eq!(rendered, "a\n\nb\n");
     let quote = entities
         .iter()
-        .find(|entity| entity.r#type == "blockquote")
+        .find(|entity| entity.kind == EntityKind::Blockquote)
         .expect("a blockquote entity");
     assert_eq!(quote.length, 2, "the quote must not swallow the next block");
 }
@@ -154,7 +154,9 @@ fn a_table_inside_a_blockquote_keeps_the_blockquote() {
     let (rendered, entities) = render("> | a | b |\n> |---|---|\n> | 1 | 2 |\n");
     assert_entities_valid(&rendered, &entities);
     assert!(
-        entities.iter().any(|entity| entity.r#type == "blockquote"),
+        entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Blockquote),
         "the quote around the table must survive: {entities:?}"
     );
     assert_well_formed("> | a | b |\n> |---|---|\n> | 1 | 2 |\n");
@@ -213,7 +215,7 @@ fn a_fence_inside_a_list_does_not_keep_the_list_indentation() {
     assert_eq!(rendered, "• item\ncode()\n• next\n");
     let pre = entities
         .iter()
-        .find(|entity| entity.r#type == "pre")
+        .find(|entity| entity.kind == EntityKind::Pre)
         .expect("a pre entity");
     assert_eq!(pre.language.as_deref(), Some("py"));
 }
@@ -265,7 +267,7 @@ fn nested_blockquotes_produce_a_single_entity() {
     assert_eq!(
         entities
             .iter()
-            .filter(|entity| entity.r#type == "blockquote")
+            .filter(|entity| entity.kind == EntityKind::Blockquote)
             .count(),
         1,
         "{entities:?}"
@@ -284,7 +286,7 @@ fn display_math_does_not_start_with_a_blank_line() {
     assert_eq!(rendered, "x = 1\n");
     let pre = entities
         .iter()
-        .find(|entity| entity.r#type == "pre")
+        .find(|entity| entity.kind == EntityKind::Pre)
         .expect("a pre entity");
     assert_eq!(pre.offset, 0);
     assert_eq!(pre.length, 5);

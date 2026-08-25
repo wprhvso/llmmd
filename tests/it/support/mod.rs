@@ -1,7 +1,7 @@
 use _native::{
     from_markdown::{Action, Event, LlmMarkdownParser},
     limits::{CAPTION_LIMIT, MESSAGE_LIMIT},
-    to_telegram::{MessageEntity, TelegramEntityBuilder},
+    to_telegram::{EntityKind, MessageEntity, TelegramEntityBuilder},
 };
 
 #[must_use]
@@ -246,11 +246,11 @@ pub fn text(markdown: &str) -> String {
 }
 
 #[must_use]
-pub fn spans(markdown: &str, kind: &str) -> Vec<(i64, i64)> {
+pub fn spans(markdown: &str, kind: EntityKind) -> Vec<(usize, usize)> {
     let (_, entities) = render(markdown);
-    let mut found: Vec<(i64, i64)> = entities
+    let mut found: Vec<(usize, usize)> = entities
         .iter()
-        .filter(|entity| entity.r#type == kind)
+        .filter(|entity| entity.kind == kind)
         .map(|entity| (entity.offset, entity.length))
         .collect();
     found.sort_unstable();
@@ -258,25 +258,21 @@ pub fn spans(markdown: &str, kind: &str) -> Vec<(i64, i64)> {
 }
 
 #[must_use]
-pub fn slice_utf16(text: &str, offset: i64, length: i64) -> String {
+pub fn slice_utf16(text: &str, offset: usize, length: usize) -> String {
     let units: Vec<u16> = text.encode_utf16().collect();
-    let start = usize::try_from(offset).unwrap_or(0);
-    let end = start.saturating_add(usize::try_from(length).unwrap_or(0));
-    String::from_utf16_lossy(units.get(start..end.min(units.len())).unwrap_or(&[]))
+    let end = offset.saturating_add(length);
+    String::from_utf16_lossy(units.get(offset..end.min(units.len())).unwrap_or(&[]))
 }
 
 pub fn assert_entities_valid(text: &str, entities: &[MessageEntity]) {
-    let total = i64::try_from(text.encode_utf16().count()).expect("text length fits in i64");
+    let total = text.encode_utf16().count();
     for entity in entities {
-        assert!(
-            entity.offset >= 0 && entity.length > 0,
-            "entity {entity:?} has a non-positive offset/length"
-        );
+        assert!(entity.length > 0, "entity {entity:?} is empty");
         assert!(
             entity.offset.saturating_add(entity.length) <= total,
             "entity {entity:?} runs past the end of {text:?} ({total} utf-16 units)"
         );
-        if entity.r#type == "text_link" {
+        if entity.kind == EntityKind::TextLink {
             assert!(
                 entity.url.is_some(),
                 "text_link entity {entity:?} carries no url"
@@ -287,7 +283,7 @@ pub fn assert_entities_valid(text: &str, entities: &[MessageEntity]) {
                 "non-link entity {entity:?} carries a url"
             );
         }
-        if entity.r#type != "pre" {
+        if entity.kind != EntityKind::Pre {
             assert!(
                 entity.language.is_none(),
                 "non-pre entity {entity:?} carries a language"

@@ -1,3 +1,5 @@
+use _native::to_telegram::EntityKind;
+
 use crate::support::{checked, slice_utf16, spans, text};
 
 #[test]
@@ -5,10 +7,7 @@ fn emphasis_becomes_entities_and_markers_disappear() {
     let (rendered, entities) = checked("**b** *i* ~~s~~ ||sp|| <u>u</u>");
     assert_eq!(rendered, "b i s sp u");
 
-    let kinds: Vec<&str> = entities
-        .iter()
-        .map(|entity| entity.r#type.as_str())
-        .collect();
+    let kinds: Vec<&str> = entities.iter().map(|entity| entity.kind.as_str()).collect();
     for expected in ["bold", "italic", "strikethrough", "spoiler", "underline"] {
         assert!(kinds.contains(&expected), "missing {expected} in {kinds:?}");
     }
@@ -21,10 +20,10 @@ fn entity_offsets_point_at_the_right_substring() {
 
     for entity in &entities {
         let covered = slice_utf16(&rendered, entity.offset, entity.length);
-        match entity.r#type.as_str() {
-            "bold" => assert_eq!(covered, "bold"),
-            "italic" => assert_eq!(covered, "italic"),
-            other => panic!("unexpected entity {other}"),
+        match entity.kind {
+            EntityKind::Bold => assert_eq!(covered, "bold"),
+            EntityKind::Italic => assert_eq!(covered, "italic"),
+            other => panic!("unexpected entity {other:?}"),
         }
     }
 }
@@ -33,7 +32,7 @@ fn entity_offsets_point_at_the_right_substring() {
 fn offsets_are_utf16_units_not_bytes_or_chars() {
     let (rendered, _) = checked("ж😀 **b**");
     assert_eq!(rendered, "ж😀 b");
-    assert_eq!(spans("ж😀 **b**", "bold"), vec![(4, 1)]);
+    assert_eq!(spans("ж😀 **b**", EntityKind::Bold), vec![(4, 1)]);
     assert_eq!(slice_utf16(&rendered, 4, 1), "b");
 }
 
@@ -41,8 +40,14 @@ fn offsets_are_utf16_units_not_bytes_or_chars() {
 fn nested_emphasis_produces_nested_spans() {
     let (rendered, _) = checked("**bold *and italic* rest**");
     assert_eq!(rendered, "bold and italic rest");
-    assert_eq!(spans("**bold *and italic* rest**", "bold"), vec![(0, 20)]);
-    assert_eq!(spans("**bold *and italic* rest**", "italic"), vec![(5, 10)]);
+    assert_eq!(
+        spans("**bold *and italic* rest**", EntityKind::Bold),
+        vec![(0, 20)]
+    );
+    assert_eq!(
+        spans("**bold *and italic* rest**", EntityKind::Italic),
+        vec![(5, 10)]
+    );
 }
 
 #[test]
@@ -51,7 +56,7 @@ fn links_carry_their_url() {
     assert_eq!(rendered, "see docs now");
     let link = entities
         .iter()
-        .find(|entity| entity.r#type == "text_link")
+        .find(|entity| entity.kind == EntityKind::TextLink)
         .expect("a text_link entity");
     assert_eq!(link.url.as_deref(), Some("https://example.com/a?b=1"));
     assert_eq!(slice_utf16(&rendered, link.offset, link.length), "docs");
@@ -63,7 +68,7 @@ fn images_keep_their_url_as_a_link() {
     assert_eq!(rendered, "alt text");
     let link = entities
         .iter()
-        .find(|entity| entity.r#type == "text_link")
+        .find(|entity| entity.kind == EntityKind::TextLink)
         .expect("an image must survive as a link");
     assert_eq!(link.url.as_deref(), Some("https://example.com/a.png"));
 }
@@ -73,14 +78,17 @@ fn an_image_without_alt_text_falls_back_to_its_url() {
     let (rendered, entities) = checked("![](https://example.com/a.png)");
     assert_eq!(rendered, "https://example.com/a.png");
     assert_eq!(entities.len(), 1);
-    assert_eq!(entities[0].r#type, "text_link");
+    assert_eq!(entities[0].kind, EntityKind::TextLink);
 }
 
 #[test]
 fn inline_code_and_math_become_code_entities() {
     let (rendered, _) = checked("a `x` b $y$ c");
     assert_eq!(rendered, "a x b y c");
-    assert_eq!(spans("a `x` b $y$ c", "code"), vec![(2, 1), (6, 1)]);
+    assert_eq!(
+        spans("a `x` b $y$ c", EntityKind::Code),
+        vec![(2, 1), (6, 1)]
+    );
 }
 
 #[test]
@@ -89,7 +97,7 @@ fn code_blocks_become_pre_with_a_language() {
     assert_eq!(rendered, "print(1)\n");
     let pre = entities
         .iter()
-        .find(|entity| entity.r#type == "pre")
+        .find(|entity| entity.kind == EntityKind::Pre)
         .expect("a pre entity");
     assert_eq!(pre.language.as_deref(), Some("python"));
     assert_eq!(slice_utf16(&rendered, pre.offset, pre.length), "print(1)");
@@ -100,7 +108,7 @@ fn a_code_block_without_a_language_has_none() {
     let (_, entities) = checked("```\nx\n```\n");
     let pre = entities
         .iter()
-        .find(|entity| entity.r#type == "pre")
+        .find(|entity| entity.kind == EntityKind::Pre)
         .expect("a pre entity");
     assert_eq!(pre.language, None);
 }
@@ -109,7 +117,7 @@ fn a_code_block_without_a_language_has_none() {
 fn headings_render_their_marker_and_are_bold() {
     let (rendered, _) = checked("## Sub\n");
     assert_eq!(rendered, "## Sub\n");
-    assert_eq!(spans("## Sub\n", "bold"), vec![(3, 3)]);
+    assert_eq!(spans("## Sub\n", EntityKind::Bold), vec![(3, 3)]);
 }
 
 #[test]
@@ -130,7 +138,7 @@ fn blockquotes_become_blockquote_entities() {
     let (rendered, entities) = checked("> quoted\n");
     assert_eq!(rendered, "quoted\n");
     assert_eq!(entities.len(), 1);
-    assert_eq!(entities[0].r#type, "blockquote");
+    assert_eq!(entities[0].kind, EntityKind::Blockquote);
 }
 
 #[test]
@@ -159,7 +167,9 @@ fn tables_render_as_monospace_code_lines() {
         "pipes must be replaced by box drawing"
     );
     assert!(
-        entities.iter().all(|entity| entity.r#type == "code"),
+        entities
+            .iter()
+            .all(|entity| entity.kind == EntityKind::Code),
         "table lines are code spans: {entities:?}"
     );
     for entity in &entities {
@@ -205,7 +215,7 @@ x<sup>2</sup> + H<sub>2</sub>O
     let (rendered, entities) = checked(document);
     assert_ne!(rendered, "");
     assert!(
-        entities.iter().any(|entity| entity.r#type == "pre"),
+        entities.iter().any(|entity| entity.kind == EntityKind::Pre),
         "the fenced block must survive"
     );
     assert!(

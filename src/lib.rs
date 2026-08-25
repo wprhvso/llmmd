@@ -27,7 +27,7 @@ fn process_markdown<'py>(
         let py_entities = PyList::empty(py);
         for entity in entities {
             let ent_dict = PyDict::new(py);
-            ent_dict.set_item("type", entity.r#type)?;
+            ent_dict.set_item("type", entity.kind.as_str())?;
             ent_dict.set_item("offset", entity.offset)?;
             ent_dict.set_item("length", entity.length)?;
             ent_dict.set_item("url", entity.url)?;

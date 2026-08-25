@@ -5,21 +5,67 @@ use crate::{
     limits::{CAPTION_LIMIT, MESSAGE_LIMIT},
 };
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+pub enum EntityKind {
+    Bold,
+    Italic,
+    Underline,
+    Strikethrough,
+    Spoiler,
+    Code,
+    Pre,
+    TextLink,
+    Blockquote,
+}
+
+impl EntityKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Bold => "bold",
+            Self::Italic => "italic",
+            Self::Underline => "underline",
+            Self::Strikethrough => "strikethrough",
+            Self::Spoiler => "spoiler",
+            Self::Code => "code",
+            Self::Pre => "pre",
+            Self::TextLink => "text_link",
+            Self::Blockquote => "blockquote",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct MessageEntity {
-    pub r#type: String,
-    pub offset: i64,
-    pub length: i64,
+    pub kind: EntityKind,
+    pub offset: usize,
+    pub length: usize,
     pub url: Option<String>,
     pub language: Option<String>,
 }
 
 #[derive(Debug)]
 struct ActiveEntity {
-    r#type: String,
+    kind: EntityKind,
     start_utf16_offset: usize,
     url: Option<String>,
     language: Option<String>,
+}
+
+impl ActiveEntity {
+    fn close_at(self, end: usize) -> Option<MessageEntity> {
+        let length = end.saturating_sub(self.start_utf16_offset);
+        if length == 0 {
+            return None;
+        }
+        Some(MessageEntity {
+            kind: self.kind,
+            offset: self.start_utf16_offset,
+            length,
+            url: self.url,
+            language: self.language,
+        })
+    }
 }
 
 #[derive(Debug, Default)]
@@ -48,9 +94,9 @@ impl BuildState {
             .saturating_add(s.encode_utf16().count());
     }
 
-    fn open_entity(&mut self, r#type: &str, url: Option<String>, language: Option<String>) {
+    fn open_entity(&mut self, kind: EntityKind, url: Option<String>, language: Option<String>) {
         self.active_stack.push(ActiveEntity {
-            r#type: r#type.to_string(),
+            kind,
             start_utf16_offset: self.current_utf16_offset,
             url,
             language,
@@ -65,7 +111,7 @@ impl BuildState {
         self.text.pop();
         self.current_utf16_offset = self.current_utf16_offset.saturating_sub(1);
 
-        let limit = i64::try_from(self.current_utf16_offset).unwrap_or(i64::MAX);
+        let limit = self.current_utf16_offset;
         self.entities.retain_mut(|entity| {
             if entity.offset.saturating_add(entity.length) > limit {
                 entity.length = limit.saturating_sub(entity.offset);
@@ -79,26 +125,11 @@ impl BuildState {
         true
     }
 
-    fn close_entity(&mut self, expected_type: &str) {
-        if let Some(idx) = self
-            .active_stack
-            .iter()
-            .rposition(|e| e.r#type == expected_type)
-        {
-            let active = self.active_stack.remove(idx);
-            let length = self
-                .current_utf16_offset
-                .saturating_sub(active.start_utf16_offset);
-
-            if length > 0 {
-                self.entities.push(MessageEntity {
-                    r#type: active.r#type,
-                    offset: i64::try_from(active.start_utf16_offset).unwrap_or(0),
-                    length: i64::try_from(length).unwrap_or(0),
-                    url: active.url,
-                    language: active.language,
-                });
-            }
+    fn close_entity(&mut self, expected: EntityKind) {
+        if let Some(index) = self.active_stack.iter().rposition(|e| e.kind == expected) {
+            let active = self.active_stack.remove(index);
+            self.entities
+                .extend(active.close_at(self.current_utf16_offset));
         }
     }
 }
@@ -343,9 +374,9 @@ impl TelegramEntityBuilder {
                                 if j > 0 {
                                     state.push_text("\n");
                                 }
-                                state.open_entity("code", None, None);
+                                state.open_entity(EntityKind::Code, None, None);
                                 state.push_text(line);
-                                state.close_entity("code");
+                                state.close_entity(EntityKind::Code);
                             }
                             state.push_text("\n");
                         }
@@ -449,32 +480,33 @@ impl TelegramEntityBuilder {
                         state.push_text("</sub>");
                     },
                 Event::Text(string_value) => state.push_text(&apply_script(&scripts, string_value)),
-                Event::BoldStart => state.open_entity("bold", None, None),
-                Event::BoldEnd => state.close_entity("bold"),
-                Event::ItalicStart => state.open_entity("italic", None, None),
-                Event::ItalicEnd => state.close_entity("italic"),
-                Event::StrikethroughStart => state.open_entity("strikethrough", None, None),
-                Event::StrikethroughEnd => state.close_entity("strikethrough"),
-                Event::UnderlineStart => state.open_entity("underline", None, None),
-                Event::UnderlineEnd => state.close_entity("underline"),
-                Event::SpoilerStart => state.open_entity("spoiler", None, None),
-                Event::SpoilerEnd => state.close_entity("spoiler"),
+                Event::BoldStart => state.open_entity(EntityKind::Bold, None, None),
+                Event::BoldEnd => state.close_entity(EntityKind::Bold),
+                Event::ItalicStart => state.open_entity(EntityKind::Italic, None, None),
+                Event::ItalicEnd => state.close_entity(EntityKind::Italic),
+                Event::StrikethroughStart =>
+                    state.open_entity(EntityKind::Strikethrough, None, None),
+                Event::StrikethroughEnd => state.close_entity(EntityKind::Strikethrough),
+                Event::UnderlineStart => state.open_entity(EntityKind::Underline, None, None),
+                Event::UnderlineEnd => state.close_entity(EntityKind::Underline),
+                Event::SpoilerStart => state.open_entity(EntityKind::Spoiler, None, None),
+                Event::SpoilerEnd => state.close_entity(EntityKind::Spoiler),
                 Event::BlockquoteStart => {
                     if quote_depth == 0 {
-                        state.open_entity("blockquote", None, None);
+                        state.open_entity(EntityKind::Blockquote, None, None);
                     }
                     quote_depth = quote_depth.saturating_add(1);
                 }
                 Event::BlockquoteEnd => {
                     quote_depth = quote_depth.saturating_sub(1);
                     if quote_depth == 0 {
-                        state.close_entity("blockquote");
+                        state.close_entity(EntityKind::Blockquote);
                     }
                 }
 
                 Event::LinkStart { url } | Event::ImageStart { url } => {
                     if link_depth == 0 {
-                        state.open_entity("text_link", Some(url.clone()), None);
+                        state.open_entity(EntityKind::TextLink, Some(url.clone()), None);
                     }
                     link_depth = link_depth.saturating_add(1);
                     if label_is_empty(&self.resolved_events, i.saturating_add(1)) {
@@ -484,7 +516,7 @@ impl TelegramEntityBuilder {
                 Event::LinkEnd | Event::ImageEnd => {
                     link_depth = link_depth.saturating_sub(1);
                     if link_depth == 0 {
-                        state.close_entity("text_link");
+                        state.close_entity(EntityKind::TextLink);
                     }
                 }
 
@@ -494,24 +526,24 @@ impl TelegramEntityBuilder {
                     } else {
                         Some(lang.trim().to_string())
                     };
-                    state.open_entity("pre", None, language);
+                    state.open_entity(EntityKind::Pre, None, language);
                 }
                 Event::CodeBlockEnd | Event::DisplayMathEnd { .. } => {
                     state.pop_newline();
-                    state.close_entity("pre");
+                    state.close_entity(EntityKind::Pre);
                 }
                 Event::InlineCode(code) | Event::InlineMath { content: code, .. } => {
-                    state.open_entity("code", None, None);
+                    state.open_entity(EntityKind::Code, None, None);
                     state.push_text(&apply_script(&scripts, code));
-                    state.close_entity("code");
+                    state.close_entity(EntityKind::Code);
                 }
 
                 Event::HeadingStart { level } => {
                     state.push_text(&format!("{} ", "#".repeat(usize::from(*level))));
-                    state.open_entity("bold", None, None);
+                    state.open_entity(EntityKind::Bold, None, None);
                 }
                 Event::HeadingEnd => {
-                    state.close_entity("bold");
+                    state.close_entity(EntityKind::Bold);
                 }
 
                 Event::ListStart { ordered, start } => {
@@ -572,27 +604,21 @@ impl TelegramEntityBuilder {
                 Event::ThematicBreak => state.push_text("──────────\n"),
 
                 Event::DisplayMathStart { .. } => {
-                    state.open_entity("pre", None, None);
+                    state.open_entity(EntityKind::Pre, None, None);
                 }
 
                 _ => {}
             }
         }
 
-        for active in state.active_stack.into_iter().rev() {
-            let length = state
-                .current_utf16_offset
-                .saturating_sub(active.start_utf16_offset);
-            if length > 0 {
-                state.entities.push(MessageEntity {
-                    r#type: active.r#type,
-                    offset: i64::try_from(active.start_utf16_offset).unwrap_or(0),
-                    length: i64::try_from(length).unwrap_or(0),
-                    url: active.url,
-                    language: active.language,
-                });
-            }
-        }
+        let end = state.current_utf16_offset;
+        let dangling: Vec<MessageEntity> = state
+            .active_stack
+            .drain(..)
+            .rev()
+            .filter_map(|active| active.close_at(end))
+            .collect();
+        state.entities.extend(dangling);
 
         (state.text, state.entities)
     }
@@ -658,24 +684,21 @@ pub fn split_message_with_entities(
 
         let mut chunk_entities = Vec::new();
         for entity in entities {
-            let entity_offset = usize::try_from(entity.offset).unwrap_or(0);
-            let entity_length = usize::try_from(entity.length).unwrap_or(0);
-            let entity_end = entity_offset.saturating_add(entity_length);
+            let entity_end = entity.offset.saturating_add(entity.length);
 
-            if entity_end <= current_start || entity_offset >= chunk_end {
+            if entity_end <= current_start || entity.offset >= chunk_end {
                 continue;
             }
 
-            let new_offset = entity_offset.saturating_sub(current_start);
-            let overlap_start = entity_offset.max(current_start);
+            let overlap_start = entity.offset.max(current_start);
             let overlap_end = entity_end.min(chunk_end);
             let new_length = overlap_end.saturating_sub(overlap_start);
 
             if new_length > 0 {
                 chunk_entities.push(MessageEntity {
-                    r#type: entity.r#type.clone(),
-                    offset: i64::try_from(new_offset).unwrap_or(0),
-                    length: i64::try_from(new_length).unwrap_or(0),
+                    kind: entity.kind,
+                    offset: entity.offset.saturating_sub(current_start),
+                    length: new_length,
                     url: entity.url.clone(),
                     language: entity.language.clone(),
                 });
@@ -719,6 +742,7 @@ pub fn process_llm_markdown_sync(
 mod tests {
     use super::{
         BuildState,
+        EntityKind,
         Event,
         MessageEntity,
         Script,
@@ -834,24 +858,24 @@ mod tests {
     fn closing_an_entity_that_was_never_opened_does_nothing() {
         let mut build = state();
         build.push_text("text");
-        build.close_entity("bold");
+        build.close_entity(EntityKind::Bold);
         assert_eq!(build.entities, Vec::new());
     }
 
     #[test]
     fn an_entity_covering_nothing_is_dropped() {
         let mut build = state();
-        build.open_entity("bold", None, None);
-        build.close_entity("bold");
+        build.open_entity(EntityKind::Bold, None, None);
+        build.close_entity(EntityKind::Bold);
         assert_eq!(build.entities, Vec::new());
     }
 
     #[test]
     fn popping_a_newline_clips_the_entities_that_covered_it() {
         let mut build = state();
-        build.open_entity("pre", None, None);
+        build.open_entity(EntityKind::Pre, None, None);
         build.push_text("code\n");
-        build.close_entity("pre");
+        build.close_entity(EntityKind::Pre);
 
         assert!(build.pop_newline());
         assert_eq!(build.text, "code");
@@ -875,7 +899,7 @@ mod tests {
     #[test]
     fn an_entity_is_clipped_to_the_chunk_that_holds_it() {
         let entity = MessageEntity {
-            r#type: "bold".to_string(),
+            kind: EntityKind::Bold,
             offset: 0,
             length: 10,
             url: None,
@@ -885,7 +909,7 @@ mod tests {
 
         assert_eq!(chunks.len(), 3);
         for (chunk, entities) in &chunks {
-            let length = i64::try_from(chunk.encode_utf16().count()).expect("a small length");
+            let length = chunk.encode_utf16().count();
             assert_eq!(entities.len(), 1);
             assert_eq!(entities[0].offset, 0);
             assert_eq!(entities[0].length, length);

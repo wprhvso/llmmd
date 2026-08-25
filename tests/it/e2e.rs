@@ -1,6 +1,6 @@
 use _native::{
     limits::{CAPTION_LIMIT, MESSAGE_LIMIT},
-    to_telegram::{MessageEntity, process_llm_markdown_sync},
+    to_telegram::{EntityKind, MessageEntity, process_llm_markdown_sync},
 };
 
 use crate::support::{assert_entities_valid, slice_utf16};
@@ -58,15 +58,15 @@ fn only_chunk(markdown: &str) -> (String, Vec<MessageEntity>) {
 fn entity_covering<'a>(
     text: &str,
     entities: &'a [MessageEntity],
-    kind: &str,
+    kind: EntityKind,
     expected: &str,
 ) -> &'a MessageEntity {
     entities
         .iter()
         .find(|entity| {
-            entity.r#type == kind && slice_utf16(text, entity.offset, entity.length) == expected
+            entity.kind == kind && slice_utf16(text, entity.offset, entity.length) == expected
         })
-        .unwrap_or_else(|| panic!("no {kind} entity covering {expected:?} in {text:?}"))
+        .unwrap_or_else(|| panic!("no {kind:?} entity covering {expected:?} in {text:?}"))
 }
 
 #[test]
@@ -91,30 +91,32 @@ fn a_realistic_answer_loses_every_markup_marker() {
 fn a_realistic_answer_maps_every_construct_to_an_entity() {
     let (text, entities) = only_chunk(ANSWER);
 
-    entity_covering(&text, &entities, "bold", "всё готово");
-    entity_covering(&text, &entities, "italic", "нюансы");
-    entity_covering(&text, &entities, "strikethrough", "зачёркнуто");
-    entity_covering(&text, &entities, "spoiler", "спойлер");
-    entity_covering(&text, &entities, "underline", "подчёркнуто");
-    entity_covering(&text, &entities, "code", "E = mc^2");
-    entity_covering(&text, &entities, "bold", "Отчёт");
-    entity_covering(&text, &entities, "bold", "Что сделано");
+    entity_covering(&text, &entities, EntityKind::Bold, "всё готово");
+    entity_covering(&text, &entities, EntityKind::Italic, "нюансы");
+    entity_covering(&text, &entities, EntityKind::Strikethrough, "зачёркнуто");
+    entity_covering(&text, &entities, EntityKind::Spoiler, "спойлер");
+    entity_covering(&text, &entities, EntityKind::Underline, "подчёркнуто");
+    entity_covering(&text, &entities, EntityKind::Code, "E = mc^2");
+    entity_covering(&text, &entities, EntityKind::Bold, "Отчёт");
+    entity_covering(&text, &entities, EntityKind::Bold, "Что сделано");
 
-    let link = entity_covering(&text, &entities, "text_link", "документации");
+    let link = entity_covering(&text, &entities, EntityKind::TextLink, "документации");
     assert_eq!(link.url.as_deref(), Some("https://example.com/docs"));
 
-    let image = entity_covering(&text, &entities, "text_link", "схема");
+    let image = entity_covering(&text, &entities, EntityKind::TextLink, "схема");
     assert_eq!(image.url.as_deref(), Some("https://example.com/d.png"));
 
     let code = entities
         .iter()
         .find(|entity| entity.language.as_deref() == Some("python"))
         .expect("the fenced block keeps its language");
-    assert_eq!(code.r#type, "pre");
+    assert_eq!(code.kind, EntityKind::Pre);
     assert!(slice_utf16(&text, code.offset, code.length).contains("return 0"));
 
     assert!(
-        entities.iter().any(|entity| entity.r#type == "blockquote"),
+        entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Blockquote),
         "the quote became a blockquote entity"
     );
 }
