@@ -6,16 +6,16 @@
   outputs =
     { self, nixpkgs }:
     let
-      version = "0.1.6";
+      version = "0.1.7";
 
       wheels = {
         x86_64-linux = {
           platform = "manylinux_2_28_x86_64";
-          hash = "sha256-yNTTujPGwCvA1FlGQUt85yapu05eCjjR+KwzB7fVIB8=";
+          hash = "sha256-auuRqNxCzmcmveuFqKFpUAy0H4nBZSFk3pBC7iSrk+E=";
         };
         aarch64-linux = {
           platform = "manylinux_2_28_aarch64";
-          hash = "sha256-uiOrNNSfM1NR5kCU4j6fhzBWJQTdK6o0KCimCQfASe8=";
+          hash = "sha256-lVoeAAlOpkWWP8G3cervaNObyNVn+NQeW57fP9akuZg=";
         };
       };
 

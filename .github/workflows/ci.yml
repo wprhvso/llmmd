@@ -61,3 +61,31 @@ jobs:
       - run: uv sync --frozen
       - run: echo "$PWD/.venv/bin" >>"$GITHUB_PATH"
       - run: pytest
+
+  package:
+    runs-on: pool
+    steps:
+      - uses: actions/checkout@v7
+      - run: uv run --no-project --with 'maturin>=1.14.1' maturin sdist --out dist
+      - run: uv run --no-project --with 'maturin>=1.14.1' maturin build --out dist
+      - run: |
+          uv venv --python 3.14 smoke-env
+          uv pip install --python smoke-env/bin/python dist/*.whl
+          smoke-env/bin/python - <<'PY'
+          import importlib.metadata as md
+
+          import llmmd
+
+          (chunk,) = llmmd.process_markdown("# T\n\n**bold** and `code`\n")
+          assert chunk["text"] == "# T\n\nbold and code\n", chunk
+          kinds = {e["type"] for e in chunk["entities"]}
+          assert kinds == {"bold", "code"}, chunk
+          assert (llmmd.MESSAGE_LIMIT, llmmd.CAPTION_LIMIT) == (4096, 1024)
+
+          meta = md.metadata("llmmd")
+          assert meta["Summary"], "the package ships without a summary"
+          assert meta["License-Expression"] == "MIT", meta["License-Expression"]
+          assert meta["Description"], "the package ships without a readme"
+          PY
+          smoke-env/bin/llmmd --help >/dev/null
+          unzip -l dist/*.whl | grep -q "llmmd/py.typed"

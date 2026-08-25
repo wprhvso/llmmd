@@ -1,12 +1,15 @@
 name: cd
 
 on:
-  push:
-    branches:
-      - main
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
 
 jobs:
   version:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: pool
     outputs:
       version: ${{ steps.read.outputs.version }}
@@ -15,6 +18,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       - id: read
         run: |
@@ -54,6 +58,8 @@ jobs:
             docker_platform: linux/arm64
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       - uses: docker/setup-qemu-action@v3
         if: matrix.platform.target == 'aarch64'
         with:
@@ -78,6 +84,8 @@ jobs:
     runs-on: pool
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       - run: uv run --no-project --with 'maturin>=1.14.1' maturin sdist --out dist
       - uses: actions/upload-artifact@v4
         with:
@@ -85,8 +93,29 @@ jobs:
           path: dist/*.tar.gz
           if-no-files-found: error
 
+  smoke:
+    needs: [version, wheels]
+    if: needs.version.outputs.release == 'true'
+    runs-on: pool
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels-x86_64-2_28
+          path: dist
+      - run: |
+          uv venv --python 3.14 smoke-env
+          uv pip install --python smoke-env/bin/python dist/*.whl
+          smoke-env/bin/python - <<'PY'
+          import llmmd
+          (chunk,) = llmmd.process_markdown("# T\n\n**bold** and `code`\n")
+          assert chunk["text"] == "# T\n\nbold and code\n", chunk
+          assert {e["type"] for e in chunk["entities"]} == {"bold", "code"}, chunk
+          assert llmmd.MESSAGE_LIMIT == 4096 and llmmd.CAPTION_LIMIT == 1024
+          PY
+          smoke-env/bin/llmmd --help >/dev/null
+
   release:
-    needs: [version, wheels, sdist]
+    needs: [version, wheels, sdist, smoke]
     if: needs.version.outputs.release == 'true'
     runs-on: pool
     environment: pypi
@@ -109,7 +138,67 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.version.outputs.version }}
-          target_commitish: ${{ github.sha }}
+          target_commitish: ${{ github.event.workflow_run.head_sha || github.sha }}
           files: dist/*
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+  flake:
+    needs: [version, release]
+    runs-on: pool
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - run: |
+          version='${{ needs.version.outputs.version }}'
+          python3 - "$version" <<'PY'
+          import base64, binascii, json, pathlib, sys, time, urllib.request
+
+          version = sys.argv[1]
+          url = f"https://pypi.org/pypi/llmmd/{version}/json"
+          for attempt in range(10):
+              try:
+                  files = json.load(urllib.request.urlopen(url))["urls"]
+                  break
+              except Exception:
+                  time.sleep(15)
+          else:
+              raise SystemExit(f"{version} never showed up on pypi")
+
+          wanted = {
+              "manylinux_2_28_x86_64": None,
+              "manylinux_2_28_aarch64": None,
+          }
+          for entry in files:
+              for platform in wanted:
+                  if entry["filename"].endswith(f"{platform}.whl"):
+                      digest = binascii.unhexlify(entry["digests"]["sha256"])
+                      wanted[platform] = "sha256-" + base64.b64encode(digest).decode()
+          missing = [p for p, h in wanted.items() if h is None]
+          if missing:
+              raise SystemExit(f"no wheels for {missing}")
+
+          flake = pathlib.Path("flake.nix")
+          text = flake.read_text()
+          import re
+          text = re.sub(r'(\n      version = )"[^"]+";', rf'\g<1>"{version}";', text, count=1)
+          for platform, digest in wanted.items():
+              text = re.sub(
+                  rf'(platform = "{platform}";\n\s*hash = )"[^"]+";',
+                  rf'\g<1>"{digest}";',
+                  text,
+                  count=1,
+              )
+          flake.write_text(text)
+          PY
+          if git diff --quiet flake.nix; then
+            exit 0
+          fi
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git commit -qm "chore: point the flake at ${version}" flake.nix
+          git push origin main

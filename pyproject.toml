@@ -1,7 +1,26 @@
 [project]
 name = "llmmd"
 version = "0.1.7"
+description = "Convert LLM-authored Markdown into Telegram message text and entities"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "wprhvso", email = "wprhvso@gmail.com" }]
 requires-python = ">=3.14"
+keywords = ["telegram", "markdown", "llm", "bot", "entities"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Topic :: Communications :: Chat",
+    "Topic :: Text Processing :: Markup :: Markdown",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Repository = "https://github.com/wprhvso/llmmd"
+Issues = "https://github.com/wprhvso/llmmd/issues"
 
 [project.scripts]
 llmmd = "llmmd.cli:main"
