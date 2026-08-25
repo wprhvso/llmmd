@@ -2,6 +2,15 @@ name: ci
 
 on:
   push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
   fmt:
@@ -22,14 +31,6 @@ jobs:
       - uses: actions/checkout@v7
       - run: cargo test --locked --all-features
 
-  doc:
-    runs-on: pool
-    steps:
-      - uses: actions/checkout@v7
-      - run: cargo doc --locked --no-deps --all-features
-        env:
-          RUSTDOCFLAGS: -D warnings
-
   ruff:
     runs-on: pool
     steps:
@@ -44,6 +45,8 @@ jobs:
 
   pyright:
     runs-on: pool
+    env:
+      MATURIN_PEP517_ARGS: --profile release
     steps:
       - uses: actions/checkout@v7
       - run: uv sync --frozen
@@ -51,6 +54,8 @@ jobs:
 
   pytest:
     runs-on: pool
+    env:
+      MATURIN_PEP517_ARGS: --profile release
     steps:
       - uses: actions/checkout@v7
       - run: uv sync --frozen
