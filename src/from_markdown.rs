@@ -1,17 +1,13 @@
-#[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq)]
 pub enum Event {
     Text(String),
     CodeBlockStart(String),
-
     CodeBlockEnd,
     InlineCode(String),
     DisplayMathStart { delimiter: String },
-    DisplayMathText(String),
     DisplayMathEnd { delimiter: String },
     InlineMath { delimiter: String, content: String },
     HeadingStart { level: u8 },
-    HeadingText(String),
     HeadingEnd,
     BlockquoteStart,
     BlockquoteEnd,

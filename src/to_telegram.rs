@@ -1,16 +1,13 @@
 use comfy_table::{Table, presets::UTF8_FULL};
-use serde::{Deserialize, Serialize};
 
 use crate::from_markdown::{Action, Event, LlmMarkdownParser, TaskStatus};
 
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct MessageEntity {
     pub r#type: String,
     pub offset: i64,
     pub length: i64,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
 }
 
@@ -222,11 +219,7 @@ fn is_block_mappable(events: &[Event], start_idx: usize, is_sup: bool) -> bool {
                     return true;
                 }
             }
-            Event::Text(s)
-            | Event::InlineCode(s)
-            | Event::HeadingText(s)
-            | Event::DisplayMathText(s)
-            | Event::InlineMath { content: s, .. } =>
+            Event::Text(s) | Event::InlineCode(s) | Event::InlineMath { content: s, .. } =>
                 for c in s.chars() {
                     if is_sup && to_superscript(c).is_none() {
                         return false;
@@ -272,10 +265,7 @@ fn label_is_empty(events: &[Event], start_idx: usize) -> bool {
                     return true;
                 }
             }
-            Event::Text(s)
-            | Event::InlineCode(s)
-            | Event::HeadingText(s)
-            | Event::InlineMath { content: s, .. }
+            Event::Text(s) | Event::InlineCode(s) | Event::InlineMath { content: s, .. }
                 if !s.trim().is_empty() =>
             {
                 return false;
@@ -456,10 +446,7 @@ impl TelegramEntityBuilder {
                     if scripts.pop() == Some(None) {
                         state.push_text("</sub>");
                     },
-                Event::Text(string_value)
-                | Event::HeadingText(string_value)
-                | Event::DisplayMathText(string_value) =>
-                    state.push_text(&apply_script(&scripts, string_value)),
+                Event::Text(string_value) => state.push_text(&apply_script(&scripts, string_value)),
                 Event::BoldStart => state.open_entity("bold", None, None),
                 Event::BoldEnd => state.close_entity("bold"),
                 Event::ItalicStart => state.open_entity("italic", None, None),
