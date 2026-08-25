@@ -174,6 +174,14 @@ const INLINE_RECURSION_LIMIT: u16 = 32;
 
 const INLINE_REPARSE_BUDGET_PER_CHAR: usize = 8;
 
+const fn can_close(previous: char) -> bool {
+    !previous.is_whitespace()
+}
+
+const fn can_open(next: char) -> bool {
+    !next.is_whitespace()
+}
+
 #[derive(Debug, Clone)]
 struct Speculation {
     kind: SpeculationKind,
@@ -1445,10 +1453,8 @@ impl LlmMarkdownParser {
                             continue;
                         }
 
-                        let mut right_flanking = !char_before.is_whitespace()
-                            && char_before != '\n'
-                            && char_before != '\0';
-                        let mut left_flanking = !c.is_whitespace() && c != '\n';
+                        let mut right_flanking = can_close(char_before);
+                        let mut left_flanking = can_open(c);
 
                         if marker == '_' {
                             if char_before.is_alphanumeric() {
@@ -1490,10 +1496,8 @@ impl LlmMarkdownParser {
                         };
                     } else {
                         if count == 2 {
-                            let right_flanking = !char_before.is_whitespace()
-                                && char_before != '\n'
-                                && char_before != '\0';
-                            let left_flanking = !c.is_whitespace() && c != '\n';
+                            let right_flanking = can_close(char_before);
+                            let left_flanking = can_open(c);
                             if right_flanking
                                 && self.has_speculation(SpeculationKind::Strikethrough)
                             {
@@ -1584,11 +1588,11 @@ impl LlmMarkdownParser {
                         self.skip_math_newline = true;
                         self.state = State::InsideDisplayMathDollar;
                     } else {
-                        let right_flanking_ok = !char_before.is_whitespace();
-                        if right_flanking_ok && self.has_speculation(SpeculationKind::MathDollar) {
+                        let right_flanking = can_close(char_before);
+                        if right_flanking && self.has_speculation(SpeculationKind::MathDollar) {
                             self.state = State::VerifyInlineMathDollarEnd;
                         } else {
-                            if !c.is_whitespace() {
+                            if can_open(c) {
                                 self.start_speculation(SpeculationKind::MathDollar);
                             }
                             self.buffer.push('$');

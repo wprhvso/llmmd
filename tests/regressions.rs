@@ -39,6 +39,17 @@ fn trailing_markers_at_end_of_input_are_not_swallowed() {
 }
 
 #[test]
+fn a_nul_byte_closes_a_delimiter_like_any_other_word_character() {
+    for (with_nul, with_letter) in [
+        ("**a\0**b", "**az**b"),
+        ("~~a\0~~b", "~~az~~b"),
+        ("$a\0$b", "$az$b"),
+    ] {
+        assert_eq!(text(with_nul).replace('\0', "z"), text(with_letter));
+    }
+}
+
+#[test]
 fn dashes_followed_by_text_stay_literal() {
     for markdown in ["--- x", "*** x", "___ x", "a\n\n--- x\n\nb"] {
         assert!(!events(markdown).contains(&Event::ThematicBreak));
