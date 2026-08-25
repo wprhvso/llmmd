@@ -8,6 +8,19 @@ use crate::{
     limits::{CAPTION_LIMIT, MAX_ENTITIES, MESSAGE_LIMIT},
 };
 
+const LIST_INDENT: &str = "  ";
+const BULLET_TOP: &str = "•";
+const BULLET_NESTED: &str = "◦";
+const BULLET_DEEP: &str = "▪";
+const CHECKBOX_TODO: &str = "☐ ";
+const CHECKBOX_DONE: &str = "☑ ";
+const THEMATIC_BREAK: &str = "──────────\n";
+const HEADING_MARKER: &str = "#";
+const SUPERSCRIPT_OPEN: &str = "<sup>";
+const SUPERSCRIPT_CLOSE: &str = "</sup>";
+const SUBSCRIPT_OPEN: &str = "<sub>";
+const SUBSCRIPT_CLOSE: &str = "</sub>";
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum EntityKind {
     Bold,
@@ -417,24 +430,24 @@ impl TelegramEntityBuilder {
                             is_block_mappable(&self.resolved_events, i.saturating_add(1), true);
                         scripts.push(mappable.then_some(Script::Super));
                         if !mappable {
-                            table_state.current_cell.push_str("<sup>");
+                            table_state.current_cell.push_str(SUPERSCRIPT_OPEN);
                         }
                     }
                     Event::SuperscriptEnd =>
                         if scripts.pop() == Some(None) {
-                            table_state.current_cell.push_str("</sup>");
+                            table_state.current_cell.push_str(SUPERSCRIPT_CLOSE);
                         },
                     Event::SubscriptStart => {
                         let mappable =
                             is_block_mappable(&self.resolved_events, i.saturating_add(1), false);
                         scripts.push(mappable.then_some(Script::Sub));
                         if !mappable {
-                            table_state.current_cell.push_str("<sub>");
+                            table_state.current_cell.push_str(SUBSCRIPT_OPEN);
                         }
                     }
                     Event::SubscriptEnd =>
                         if scripts.pop() == Some(None) {
-                            table_state.current_cell.push_str("</sub>");
+                            table_state.current_cell.push_str(SUBSCRIPT_CLOSE);
                         },
                     Event::ImageStart { url } | Event::LinkStart { url } => {
                         if label_is_empty(&self.resolved_events, i.saturating_add(1)) {
@@ -463,24 +476,24 @@ impl TelegramEntityBuilder {
                         is_block_mappable(&self.resolved_events, i.saturating_add(1), true);
                     scripts.push(mappable.then_some(Script::Super));
                     if !mappable {
-                        state.push_text("<sup>");
+                        state.push_text(SUPERSCRIPT_OPEN);
                     }
                 }
                 Event::SuperscriptEnd =>
                     if scripts.pop() == Some(None) {
-                        state.push_text("</sup>");
+                        state.push_text(SUPERSCRIPT_CLOSE);
                     },
                 Event::SubscriptStart => {
                     let mappable =
                         is_block_mappable(&self.resolved_events, i.saturating_add(1), false);
                     scripts.push(mappable.then_some(Script::Sub));
                     if !mappable {
-                        state.push_text("<sub>");
+                        state.push_text(SUBSCRIPT_OPEN);
                     }
                 }
                 Event::SubscriptEnd =>
                     if scripts.pop() == Some(None) {
-                        state.push_text("</sub>");
+                        state.push_text(SUBSCRIPT_CLOSE);
                     },
                 Event::Text(string_value) => state.push_text(&apply_script(&scripts, string_value)),
                 Event::BoldStart => state.open_entity(EntityKind::Bold, None, None),
@@ -542,7 +555,7 @@ impl TelegramEntityBuilder {
                 }
 
                 Event::HeadingStart { level } => {
-                    state.push_text(&format!("{} ", "#".repeat(usize::from(*level))));
+                    state.push_text(&format!("{} ", HEADING_MARKER.repeat(usize::from(*level))));
                     state.open_entity(EntityKind::Bold, None, None);
                 }
                 Event::HeadingEnd => {
@@ -554,7 +567,7 @@ impl TelegramEntityBuilder {
                 }
                 Event::ListItemStart { task_status } => {
                     let depth = list_stack.len().saturating_sub(1);
-                    let indent = "  ".repeat(depth);
+                    let indent = LIST_INDENT.repeat(depth);
                     state.push_text(&indent);
 
                     let is_ordered = matches!(list_stack.last(), Some(Some(_)));
@@ -584,19 +597,21 @@ impl TelegramEntityBuilder {
 
                         match task_status {
                             TaskStatus::None => state.push_text(&format!("{num_str} ")),
-                            TaskStatus::Todo => state.push_text(&format!("{num_str} ☐ ")),
-                            TaskStatus::Done => state.push_text(&format!("{num_str} ☑ ")),
+                            TaskStatus::Todo =>
+                                state.push_text(&format!("{num_str} {CHECKBOX_TODO}")),
+                            TaskStatus::Done =>
+                                state.push_text(&format!("{num_str} {CHECKBOX_DONE}")),
                         }
                     } else if !list_stack.is_empty() {
                         let bullet = match depth % 3 {
-                            0 => "•",
-                            1 => "◦",
-                            _ => "▪",
+                            0 => BULLET_TOP,
+                            1 => BULLET_NESTED,
+                            _ => BULLET_DEEP,
                         };
                         match task_status {
                             TaskStatus::None => state.push_text(&format!("{bullet} ")),
-                            TaskStatus::Todo => state.push_text("☐ "),
-                            TaskStatus::Done => state.push_text("☑ "),
+                            TaskStatus::Todo => state.push_text(CHECKBOX_TODO),
+                            TaskStatus::Done => state.push_text(CHECKBOX_DONE),
                         }
                     }
                 }
@@ -604,7 +619,7 @@ impl TelegramEntityBuilder {
                     list_stack.pop();
                 }
 
-                Event::ThematicBreak => state.push_text("──────────\n"),
+                Event::ThematicBreak => state.push_text(THEMATIC_BREAK),
 
                 Event::DisplayMathStart { .. } => {
                     state.open_entity(EntityKind::Pre, None, None);
