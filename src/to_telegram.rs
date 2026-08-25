@@ -60,6 +60,12 @@ pub struct MessageEntity {
     pub language: Option<String>,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct MessageChunk {
+    pub text: String,
+    pub entities: Vec<MessageEntity>,
+}
+
 #[derive(Debug)]
 struct ActiveEntity {
     kind: EntityKind,
@@ -351,7 +357,7 @@ impl TelegramEntityBuilder {
     }
 
     #[must_use]
-    pub fn build(&self) -> (String, Vec<MessageEntity>) {
+    pub fn build(self) -> MessageChunk {
         let mut state = BuildState {
             text: String::new(),
             entities: Vec::new(),
@@ -641,7 +647,10 @@ impl TelegramEntityBuilder {
             .entities
             .sort_by_key(|entity| (entity.offset, Reverse(entity.length)));
 
-        (state.text, state.entities)
+        MessageChunk {
+            text: state.text,
+            entities: state.entities,
+        }
     }
 }
 
@@ -650,7 +659,7 @@ pub fn split_message_with_entities(
     text: &str,
     entities: &[MessageEntity],
     limit: usize,
-) -> Vec<(String, Vec<MessageEntity>)> {
+) -> Vec<MessageChunk> {
     if text.is_empty() || limit == 0 {
         return Vec::new();
     }
@@ -669,7 +678,10 @@ pub fn split_message_with_entities(
         let chunk_entities = clip_entities(entities, start_utf16, end_utf16);
 
         if !chunk.trim().is_empty() {
-            result.push((chunk.to_string(), chunk_entities));
+            result.push(MessageChunk {
+                text: chunk.to_string(),
+                entities: chunk_entities,
+            });
         }
 
         start_byte = start_byte.saturating_add(cut.byte);
@@ -790,10 +802,7 @@ fn clip_entities(
 }
 
 #[must_use]
-pub fn process_llm_markdown_sync(
-    markdown: &str,
-    with_photo: bool,
-) -> Vec<(String, Vec<MessageEntity>)> {
+pub fn process_markdown(markdown: &str, with_photo: bool) -> Vec<MessageChunk> {
     let mut parser = LlmMarkdownParser::new();
     let chunk_result = parser.push_chunk(markdown);
     let end_result = parser.end();
@@ -803,14 +812,14 @@ pub fn process_llm_markdown_sync(
         builder.push_action(action);
     }
 
-    let (text, entities) = builder.build();
+    let whole = builder.build();
     let limit = if with_photo {
         CAPTION_LIMIT
     } else {
         MESSAGE_LIMIT
     };
 
-    split_message_with_entities(&text, &entities, limit)
+    split_message_with_entities(&whole.text, &whole.entities, limit)
 }
 
 #[cfg(test)]
@@ -983,11 +992,11 @@ mod tests {
         let chunks = split_message_with_entities("abcdefghij", &[entity], 4);
 
         assert_eq!(chunks.len(), 3);
-        for (chunk, entities) in &chunks {
-            let length = chunk.encode_utf16().count();
-            assert_eq!(entities.len(), 1);
-            assert_eq!(entities[0].offset, 0);
-            assert_eq!(entities[0].length, length);
+        for chunk in &chunks {
+            let length = chunk.text.encode_utf16().count();
+            assert_eq!(chunk.entities.len(), 1);
+            assert_eq!(chunk.entities[0].offset, 0);
+            assert_eq!(chunk.entities[0].length, length);
         }
     }
 }

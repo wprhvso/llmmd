@@ -87,7 +87,8 @@ pub fn render_actions(actions: Vec<Action>) -> (String, Vec<MessageEntity>) {
     for action in actions {
         builder.push_action(action);
     }
-    builder.build()
+    let chunk = builder.build();
+    (chunk.text, chunk.entities)
 }
 
 #[must_use]

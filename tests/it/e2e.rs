@@ -1,6 +1,6 @@
 use _native::{
     limits::{CAPTION_LIMIT, MESSAGE_LIMIT},
-    to_telegram::{EntityKind, MessageEntity, process_llm_markdown_sync},
+    to_telegram::{EntityKind, MessageEntity, process_markdown},
 };
 
 use crate::support::{assert_entities_valid, slice_utf16};
@@ -50,9 +50,10 @@ def main() -> int:
 ";
 
 fn only_chunk(markdown: &str) -> (String, Vec<MessageEntity>) {
-    let mut chunks = process_llm_markdown_sync(markdown, false);
+    let mut chunks = process_markdown(markdown, false);
     assert_eq!(chunks.len(), 1, "the answer should fit a single message");
-    chunks.remove(0)
+    let chunk = chunks.remove(0);
+    (chunk.text, chunk.entities)
 }
 
 fn entity_covering<'a>(
@@ -143,23 +144,23 @@ fn a_realistic_answer_renders_its_block_structure() {
 #[test]
 fn a_long_answer_is_delivered_as_several_valid_messages() {
     let document = ANSWER.repeat(20);
-    let chunks = process_llm_markdown_sync(&document, false);
+    let chunks = process_markdown(&document, false);
     assert!(chunks.len() > 1);
 
-    for (text, entities) in &chunks {
-        assert!(text.encode_utf16().count() <= MESSAGE_LIMIT);
-        assert_ne!(text.trim(), "");
-        assert_entities_valid(text, entities);
+    for chunk in &chunks {
+        assert!(chunk.text.encode_utf16().count() <= MESSAGE_LIMIT);
+        assert_ne!(chunk.text.trim(), "");
+        assert_entities_valid(&chunk.text, &chunk.entities);
     }
 }
 
 #[test]
 fn a_photo_caption_uses_the_smaller_limit() {
-    let chunks = process_llm_markdown_sync(ANSWER, true);
+    let chunks = process_markdown(ANSWER, true);
     assert_ne!(chunks.len(), 0);
 
-    for (text, entities) in &chunks {
-        assert!(text.encode_utf16().count() <= CAPTION_LIMIT);
-        assert_entities_valid(text, entities);
+    for chunk in &chunks {
+        assert!(chunk.text.encode_utf16().count() <= CAPTION_LIMIT);
+        assert_entities_valid(&chunk.text, &chunk.entities);
     }
 }

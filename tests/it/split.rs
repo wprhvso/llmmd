@@ -2,8 +2,9 @@ use _native::{
     limits::{CAPTION_LIMIT, MAX_ENTITIES, MESSAGE_LIMIT},
     to_telegram::{
         EntityKind,
+        MessageChunk,
         MessageEntity,
-        process_llm_markdown_sync,
+        process_markdown,
         split_message_with_entities,
     },
 };
@@ -20,8 +21,8 @@ fn entity(kind: EntityKind, offset: usize, length: usize) -> MessageEntity {
     }
 }
 
-fn assert_lossless(text: &str, chunks: &[(String, Vec<MessageEntity>)]) {
-    let rejoined: String = chunks.iter().map(|(chunk, _)| chunk.as_str()).collect();
+fn assert_lossless(text: &str, chunks: &[MessageChunk]) {
+    let rejoined: String = chunks.iter().map(|chunk| chunk.text.as_str()).collect();
     assert!(
         !rejoined.contains('\u{FFFD}') || text.contains('\u{FFFD}'),
         "splitting introduced U+FFFD replacement characters"
@@ -31,9 +32,9 @@ fn assert_lossless(text: &str, chunks: &[(String, Vec<MessageEntity>)]) {
     let expected: String = text.chars().filter(|c| !c.is_whitespace()).collect();
     assert_eq!(kept, expected, "splitting lost or reordered text");
 
-    for (chunk, _) in chunks {
+    for chunk in chunks {
         assert!(
-            !chunk.trim().is_empty(),
+            !chunk.text.trim().is_empty(),
             "a whitespace-only chunk would be rejected by Telegram"
         );
     }
@@ -47,9 +48,9 @@ fn assert_entities_survive(text: &str, entities: &[MessageEntity], limit: usize)
     let mut base = 0_usize;
     let mut recovered: Vec<(EntityKind, String)> = Vec::new();
 
-    for (chunk, chunk_entities) in &chunks {
-        let chunk_units: Vec<u16> = chunk.encode_utf16().collect();
-        for chunk_entity in chunk_entities {
+    for chunk in &chunks {
+        let chunk_units: Vec<u16> = chunk.text.encode_utf16().collect();
+        for chunk_entity in &chunk.entities {
             let offset = chunk_entity.offset;
             let length = chunk_entity.length;
             assert!(
@@ -90,8 +91,8 @@ fn short_text_stays_in_one_chunk() {
     let chunks =
         split_message_with_entities("hello", &[entity(EntityKind::Bold, 0, 5)], MESSAGE_LIMIT);
     assert_eq!(chunks.len(), 1);
-    assert_eq!(chunks[0].0, "hello");
-    assert_eq!(chunks[0].1.len(), 1);
+    assert_eq!(chunks[0].text, "hello");
+    assert_eq!(chunks[0].entities.len(), 1);
 }
 
 #[test]
@@ -99,11 +100,11 @@ fn chunks_respect_the_limit() {
     let text = "x".repeat(10_000);
     let chunks = split_message_with_entities(&text, &[], MESSAGE_LIMIT);
     assert!(chunks.len() >= 3);
-    for (chunk, _) in &chunks {
+    for chunk in &chunks {
         assert!(
-            utf16_len(chunk) <= MESSAGE_LIMIT,
+            utf16_len(&chunk.text) <= MESSAGE_LIMIT,
             "chunk of {} units exceeds the limit",
-            utf16_len(chunk)
+            utf16_len(&chunk.text)
         );
     }
     assert_lossless(&text, &chunks);
@@ -113,11 +114,11 @@ fn chunks_respect_the_limit() {
 fn splitting_prefers_a_newline_then_a_space() {
     let text = format!("{}\n{}", "a".repeat(50), "b".repeat(50));
     let chunks = split_message_with_entities(&text, &[], 60);
-    assert_eq!(chunks[0].0, format!("{}\n", "a".repeat(50)));
+    assert_eq!(chunks[0].text, format!("{}\n", "a".repeat(50)));
 
     let text = format!("{} {}", "a".repeat(50), "b".repeat(50));
     let chunks = split_message_with_entities(&text, &[], 60);
-    assert_eq!(chunks[0].0, format!("{} ", "a".repeat(50)));
+    assert_eq!(chunks[0].text, format!("{} ", "a".repeat(50)));
 }
 
 #[test]
@@ -126,9 +127,9 @@ fn a_surrogate_pair_is_never_cut_in_half() {
         let text = "😀".repeat(40);
         let chunks = split_message_with_entities(&text, &[], limit);
         assert_lossless(&text, &chunks);
-        for (chunk, _) in &chunks {
+        for chunk in &chunks {
             assert!(
-                !chunk.contains('\u{FFFD}'),
+                !chunk.text.contains('\u{FFFD}'),
                 "limit {limit} produced a broken chunk {chunk:?}"
             );
         }
@@ -148,7 +149,7 @@ fn surrogate_pairs_survive_next_to_ordinary_text() {
 fn a_limit_smaller_than_the_first_character_still_makes_progress() {
     let chunks = split_message_with_entities("😀a", &[], 1);
     assert_lossless("😀a", &chunks);
-    assert_eq!(chunks[0].0, "😀");
+    assert_eq!(chunks[0].text, "😀");
 }
 
 #[test]
@@ -162,9 +163,9 @@ fn entities_are_clipped_to_their_chunk() {
 
     let chunks = split_message_with_entities(&text, &entities, 100);
     assert_eq!(chunks.len(), 2);
-    assert_eq!(chunks[0].1, vec![entity(EntityKind::Bold, 0, 100)]);
+    assert_eq!(chunks[0].entities, vec![entity(EntityKind::Bold, 0, 100)]);
     assert_eq!(
-        chunks[1].1,
+        chunks[1].entities,
         vec![
             entity(EntityKind::Bold, 0, 100),
             entity(EntityKind::Italic, 50, 20)
@@ -176,8 +177,8 @@ fn entities_are_clipped_to_their_chunk() {
 fn an_entity_entirely_outside_a_chunk_is_dropped() {
     let text = "a".repeat(200);
     let chunks = split_message_with_entities(&text, &[entity(EntityKind::Bold, 150, 10)], 100);
-    assert_eq!(chunks[0].1, []);
-    assert_eq!(chunks[1].1, vec![entity(EntityKind::Bold, 50, 10)]);
+    assert_eq!(chunks[0].entities, []);
+    assert_eq!(chunks[1].entities, vec![entity(EntityKind::Bold, 50, 10)]);
 }
 
 #[test]
@@ -191,8 +192,8 @@ fn entity_urls_and_languages_are_copied_into_every_chunk() {
         language: None,
     };
     let chunks = split_message_with_entities(&text, &[source], 100);
-    for (_, chunk_entities) in &chunks {
-        for chunk_entity in chunk_entities {
+    for chunk in &chunks {
+        for chunk_entity in &chunk.entities {
             assert_eq!(chunk_entity.url.as_deref(), Some("https://example.com"));
         }
     }
@@ -201,40 +202,40 @@ fn entity_urls_and_languages_are_copied_into_every_chunk() {
 #[test]
 fn zero_length_entities_are_dropped() {
     let chunks = split_message_with_entities("abc", &[entity(EntityKind::Bold, 1, 0)], 10);
-    assert_eq!(chunks[0].1, []);
+    assert_eq!(chunks[0].entities, []);
 }
 
 #[test]
 fn process_respects_the_photo_caption_limit() {
     let markdown = "word ".repeat(1000);
 
-    let plain = process_llm_markdown_sync(&markdown, false);
-    for (chunk, _) in &plain {
-        assert!(utf16_len(chunk) <= MESSAGE_LIMIT);
+    let plain = process_markdown(&markdown, false);
+    for chunk in &plain {
+        assert!(utf16_len(&chunk.text) <= MESSAGE_LIMIT);
     }
 
-    let with_photo = process_llm_markdown_sync(&markdown, true);
-    for (chunk, _) in &with_photo {
-        assert!(utf16_len(chunk) <= CAPTION_LIMIT);
+    let with_photo = process_markdown(&markdown, true);
+    for chunk in &with_photo {
+        assert!(utf16_len(&chunk.text) <= CAPTION_LIMIT);
     }
     assert!(with_photo.len() > plain.len());
 }
 
 #[test]
 fn process_of_empty_markdown_is_empty() {
-    assert_eq!(process_llm_markdown_sync("", false).len(), 0);
+    assert_eq!(process_markdown("", false).len(), 0);
 }
 
 #[test]
 fn process_keeps_entities_inside_their_chunk() {
     let markdown = format!("{}\n\n**bold tail**\n", "filler line\n".repeat(500));
     for chunks in [
-        process_llm_markdown_sync(&markdown, false),
-        process_llm_markdown_sync(&markdown, true),
+        process_markdown(&markdown, false),
+        process_markdown(&markdown, true),
     ] {
-        for (chunk, entities) in &chunks {
-            let units = utf16_len(chunk);
-            for chunk_entity in entities {
+        for chunk in &chunks {
+            let units = utf16_len(&chunk.text);
+            for chunk_entity in &chunk.entities {
                 let offset = chunk_entity.offset;
                 let length = chunk_entity.length;
                 assert!(
@@ -252,7 +253,7 @@ fn whitespace_only_chunks_are_not_emitted() {
     let chunks = split_message_with_entities(&text, &[], 100);
     assert_lossless(&text, &chunks);
     assert_eq!(chunks.len(), 1);
-    assert_eq!(chunks[0].0, "a".repeat(100));
+    assert_eq!(chunks[0].text, "a".repeat(100));
 }
 
 #[test]
@@ -261,9 +262,9 @@ fn an_early_line_break_does_not_produce_a_tiny_chunk() {
     let chunks = split_message_with_entities(&text, &[], 100);
     assert_lossless(&text, &chunks);
 
-    for (chunk, _) in chunks.split_last().expect("at least one chunk").1 {
+    for chunk in chunks.split_last().expect("at least one chunk").1 {
         assert_eq!(
-            utf16_len(chunk),
+            utf16_len(&chunk.text),
             100,
             "chunk {chunk:?} wastes most of the message"
         );
@@ -275,11 +276,11 @@ fn a_grapheme_cluster_is_never_cut_in_half() {
     let text = "👨‍👩‍👧".repeat(20);
     for limit in 2..40_usize {
         let chunks = split_message_with_entities(&text, &[], limit);
-        let rejoined: String = chunks.iter().map(|(chunk, _)| chunk.as_str()).collect();
+        let rejoined: String = chunks.iter().map(|chunk| chunk.text.as_str()).collect();
         assert_eq!(rejoined, text, "limit {limit} broke a cluster");
-        for (chunk, _) in &chunks {
+        for chunk in &chunks {
             assert!(
-                !chunk.starts_with('\u{200d}') && !chunk.ends_with('\u{200d}'),
+                !chunk.text.starts_with('\u{200d}') && !chunk.text.ends_with('\u{200d}'),
                 "limit {limit} cut on a zero-width joiner: {chunk:?}"
             );
         }
@@ -293,24 +294,22 @@ fn a_chunk_never_carries_more_entities_than_telegram_accepts() {
         .map(|index| entity(EntityKind::Bold, index * 2, 1))
         .collect();
 
-    for (_, chunk_entities) in split_message_with_entities(&text, &entities, MESSAGE_LIMIT) {
+    for chunk in split_message_with_entities(&text, &entities, MESSAGE_LIMIT) {
         assert!(
-            chunk_entities.len() <= MAX_ENTITIES,
+            chunk.entities.len() <= MAX_ENTITIES,
             "{} entities in one chunk",
-            chunk_entities.len()
+            chunk.entities.len()
         );
     }
 }
 
 #[test]
 fn entities_come_back_in_document_order() {
-    let (_, entities) = _native::to_telegram::process_llm_markdown_sync(
-        "**bold *italic* rest** and `code` here",
-        false,
-    )
-    .into_iter()
-    .next()
-    .expect("one chunk");
+    let chunk = process_markdown("**bold *italic* rest** and `code` here", false)
+        .into_iter()
+        .next()
+        .expect("one chunk");
+    let entities = chunk.entities;
 
     let offsets: Vec<usize> = entities.iter().map(|entity| entity.offset).collect();
     let mut sorted = offsets.clone();

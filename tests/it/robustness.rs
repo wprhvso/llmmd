@@ -1,4 +1,4 @@
-use _native::to_telegram::{MessageEntity, process_llm_markdown_sync};
+use _native::to_telegram::{MessageEntity, process_markdown};
 
 use crate::support::{
     actions,
@@ -26,11 +26,11 @@ fn random_markup_soup_survives_the_public_entry_point() {
     for document in corpus(1500) {
         for with_photo in [false, true] {
             let limit = limit_for(with_photo);
-            let chunks = process_llm_markdown_sync(&document, with_photo);
-            for (chunk, entities) in &chunks {
-                assert_entities_valid(chunk, entities);
+            let chunks = process_markdown(&document, with_photo);
+            for chunk in &chunks {
+                assert_entities_valid(&chunk.text, &chunk.entities);
                 assert!(
-                    chunk.encode_utf16().count() <= limit.max(2),
+                    chunk.text.encode_utf16().count() <= limit.max(2),
                     "chunk exceeds the {limit}-unit limit for {document:?}"
                 );
             }

@@ -1,6 +1,6 @@
 use _native::{
     limits::{CAPTION_LIMIT, MESSAGE_LIMIT},
-    to_telegram::{EntityKind, process_llm_markdown_sync, split_message_with_entities},
+    to_telegram::{EntityKind, process_markdown, split_message_with_entities},
 };
 
 use crate::support::{
@@ -33,7 +33,7 @@ fn splitting_keeps_every_non_whitespace_character() {
         let (text, entities) = render(&document);
         for limit in LIMITS {
             let chunks = split_message_with_entities(&text, &entities, *limit);
-            let rejoined: String = chunks.iter().map(|(chunk, _)| chunk.as_str()).collect();
+            let rejoined: String = chunks.iter().map(|chunk| chunk.text.as_str()).collect();
             assert_eq!(
                 non_whitespace(&rejoined),
                 non_whitespace(&text),
@@ -48,15 +48,15 @@ fn every_chunk_respects_the_limit_and_carries_valid_entities() {
     for document in corpus_seeded(0x4242_4242, 600) {
         let (text, entities) = render(&document);
         for limit in LIMITS {
-            for (chunk, chunk_entities) in split_message_with_entities(&text, &entities, *limit) {
-                assert_entities_valid(&chunk, &chunk_entities);
+            for chunk in split_message_with_entities(&text, &entities, *limit) {
+                assert_entities_valid(&chunk.text, &chunk.entities);
                 assert!(
-                    utf16_len(&chunk) <= (*limit).max(2),
+                    utf16_len(&chunk.text) <= (*limit).max(2),
                     "a chunk of {} units exceeds the limit of {limit} for {document:?}",
-                    utf16_len(&chunk)
+                    utf16_len(&chunk.text)
                 );
                 assert!(
-                    !chunk.trim().is_empty(),
+                    !chunk.text.trim().is_empty(),
                     "an empty chunk would be rejected by Telegram"
                 );
             }
@@ -79,9 +79,10 @@ fn a_split_entity_still_covers_text_it_covered_before() {
             .collect();
 
         for limit in [8_usize, 64, 1024] {
-            for (chunk, chunk_entities) in split_message_with_entities(&text, &entities, limit) {
-                for entity in &chunk_entities {
-                    let piece = non_whitespace(&slice_utf16(&chunk, entity.offset, entity.length));
+            for chunk in split_message_with_entities(&text, &entities, limit) {
+                for entity in &chunk.entities {
+                    let piece =
+                        non_whitespace(&slice_utf16(&chunk.text, entity.offset, entity.length));
                     assert!(
                         originals
                             .iter()
@@ -100,10 +101,10 @@ fn the_public_entry_point_never_returns_an_unusable_chunk() {
     for document in corpus_seeded(0x9999_0001, 800) {
         for with_photo in [false, true] {
             let limit = limit_for(with_photo);
-            for (chunk, entities) in process_llm_markdown_sync(&document, with_photo) {
-                assert_ne!(chunk.trim(), "");
-                assert!(utf16_len(&chunk) <= limit);
-                assert_entities_valid(&chunk, &entities);
+            for chunk in process_markdown(&document, with_photo) {
+                assert_ne!(chunk.text.trim(), "");
+                assert!(utf16_len(&chunk.text) <= limit);
+                assert_entities_valid(&chunk.text, &chunk.entities);
             }
         }
     }
@@ -129,9 +130,9 @@ fn pathological_documents_finish_without_panicking() {
     ];
 
     for document in documents {
-        let chunks = process_llm_markdown_sync(&document, false);
-        for (chunk, entities) in &chunks {
-            assert_entities_valid(chunk, entities);
+        let chunks = process_markdown(&document, false);
+        for chunk in &chunks {
+            assert_entities_valid(&chunk.text, &chunk.entities);
         }
     }
 }
@@ -141,14 +142,15 @@ fn a_long_document_is_split_into_deliverable_messages() {
     let paragraph = "**bold** text with a [link](https://example.com) and `code`. ";
     let document = paragraph.repeat(400);
 
-    let chunks = process_llm_markdown_sync(&document, false);
+    let chunks = process_markdown(&document, false);
     assert!(chunks.len() > 1, "the document should not fit one message");
 
-    for (chunk, entities) in &chunks {
-        assert!(utf16_len(chunk) <= MESSAGE_LIMIT);
-        assert_entities_valid(chunk, entities);
+    for chunk in &chunks {
+        assert!(utf16_len(&chunk.text) <= MESSAGE_LIMIT);
+        assert_entities_valid(&chunk.text, &chunk.entities);
         assert!(
-            entities
+            chunk
+                .entities
                 .iter()
                 .any(|entity| entity.kind == EntityKind::Bold),
             "every chunk of this document contains bold text"

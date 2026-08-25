@@ -1,4 +1,4 @@
-use _native::to_telegram::process_llm_markdown_sync;
+use _native::to_telegram::process_markdown;
 
 use crate::support::{
     Rng,
@@ -94,10 +94,13 @@ fn mutated_documents_survive_the_public_entry_point() {
     for document in mutants(0xF0F0_3333, 1200) {
         for with_photo in [false, true] {
             let limit = limit_for(with_photo);
-            for (chunk, entities) in process_llm_markdown_sync(&document, with_photo) {
-                assert_entities_valid(&chunk, &entities);
-                assert!(chunk.encode_utf16().count() <= limit);
-                assert!(!chunk.contains('\r'), "a carriage return reached {chunk:?}");
+            for chunk in process_markdown(&document, with_photo) {
+                assert_entities_valid(&chunk.text, &chunk.entities);
+                assert!(chunk.text.encode_utf16().count() <= limit);
+                assert!(
+                    !chunk.text.contains('\r'),
+                    "a carriage return reached {chunk:?}"
+                );
             }
         }
     }
