@@ -297,7 +297,6 @@ impl Rng {
         Self(seed ^ 0x9E37_79B9_7F4A_7C15)
     }
 
-    #[allow(clippy::missing_const_for_fn)]
     pub fn next_u64(&mut self) -> u64 {
         self.0 ^= self.0 >> 12;
         self.0 ^= self.0 << 25;

@@ -185,7 +185,7 @@ struct Speculation {
     raw_content: String,
 }
 
-#[allow(clippy::struct_excessive_bools)]
+#[expect(clippy::struct_excessive_bools)]
 #[derive(Debug)]
 pub struct LlmMarkdownParser {
     state: State,
@@ -381,7 +381,6 @@ impl LlmMarkdownParser {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     fn resolve_link(
         &mut self,
         spec_idx: usize,
@@ -450,7 +449,6 @@ impl LlmMarkdownParser {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     fn resolve_speculation(
         &mut self,
         kind: SpeculationKind,
@@ -643,7 +641,6 @@ impl LlmMarkdownParser {
         self.push_event(Event::TableRowEnd, out);
     }
 
-    #[allow(clippy::too_many_lines)]
     pub fn push_chunk(&mut self, chunk: &str) -> ChunkResult {
         let mut actions = Vec::new();
 
@@ -1095,7 +1092,6 @@ impl LlmMarkdownParser {
         ChunkResult { actions }
     }
 
-    #[allow(clippy::too_many_lines)]
     pub fn end(&mut self) -> ChunkResult {
         let mut actions = Vec::new();
 
@@ -1232,7 +1228,6 @@ impl LlmMarkdownParser {
         ChunkResult { actions }
     }
 
-    #[allow(clippy::too_many_lines)]
     fn push_char(&mut self, c: char, out: &mut Vec<Action>) {
         let mut reprocess = true;
 

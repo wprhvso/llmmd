@@ -301,7 +301,6 @@ impl TelegramEntityBuilder {
     }
 
     #[must_use]
-    #[allow(clippy::too_many_lines)]
     pub fn build(&self) -> (String, Vec<MessageEntity>) {
         let mut state = BuildState {
             text: String::new(),
