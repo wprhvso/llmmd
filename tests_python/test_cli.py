@@ -96,7 +96,7 @@ def test_a_file_and_stdin_produce_the_same_output(tmp_path: Path) -> None:
     assert from_file.stdout == from_stdin.stdout
 
 
-def test_the_installed_entry_point_works(tmp_path: Path) -> None:
+def test_the_installed_entry_point_works() -> None:
     script = Path(sys.executable).with_name("llmmd")
     if not script.exists():
         pytest.skip("консольный скрипт не установлен")
