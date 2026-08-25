@@ -1,6 +1,9 @@
 use comfy_table::{Table, presets::UTF8_FULL};
 
-use crate::from_markdown::{Action, Event, LlmMarkdownParser, TaskStatus};
+use crate::{
+    from_markdown::{Action, Event, LlmMarkdownParser, TaskStatus},
+    limits::{CAPTION_LIMIT, MESSAGE_LIMIT},
+};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct MessageEntity {
@@ -703,7 +706,11 @@ pub fn process_llm_markdown_sync(
     }
 
     let (text, entities) = builder.build();
-    let limit = if with_photo { 1024 } else { 4096 };
+    let limit = if with_photo {
+        CAPTION_LIMIT
+    } else {
+        MESSAGE_LIMIT
+    };
 
     split_message_with_entities(&text, &entities, limit)
 }

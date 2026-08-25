@@ -2,8 +2,18 @@
 
 use _native::{
     from_markdown::{Action, Event, LlmMarkdownParser},
+    limits::{CAPTION_LIMIT, MESSAGE_LIMIT},
     to_telegram::{MessageEntity, TelegramEntityBuilder},
 };
+
+#[must_use]
+pub const fn limit_for(with_photo: bool) -> usize {
+    if with_photo {
+        CAPTION_LIMIT
+    } else {
+        MESSAGE_LIMIT
+    }
+}
 
 #[must_use]
 pub fn actions(markdown: &str) -> Vec<Action> {

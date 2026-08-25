@@ -1,6 +1,9 @@
 mod common;
 
-use _native::to_telegram::{MessageEntity, process_llm_markdown_sync};
+use _native::{
+    limits::{CAPTION_LIMIT, MESSAGE_LIMIT},
+    to_telegram::{MessageEntity, process_llm_markdown_sync},
+};
 use common::{assert_entities_valid, slice_utf16};
 
 const ANSWER: &str = "\
@@ -143,7 +146,7 @@ fn a_long_answer_is_delivered_as_several_valid_messages() {
     assert!(chunks.len() > 1);
 
     for (text, entities) in &chunks {
-        assert!(text.encode_utf16().count() <= 4096);
+        assert!(text.encode_utf16().count() <= MESSAGE_LIMIT);
         assert_ne!(text.trim(), "");
         assert_entities_valid(text, entities);
     }
@@ -155,7 +158,7 @@ fn a_photo_caption_uses_the_smaller_limit() {
     assert_ne!(chunks.len(), 0);
 
     for (text, entities) in &chunks {
-        assert!(text.encode_utf16().count() <= 1024);
+        assert!(text.encode_utf16().count() <= CAPTION_LIMIT);
         assert_entities_valid(text, entities);
     }
 }

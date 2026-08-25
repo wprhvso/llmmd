@@ -5,10 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from llmmd import MessageChunk, MessageEntity, process_markdown
-
-CAPTION_LIMIT = 1024
-MESSAGE_LIMIT = 4096
+from llmmd import (
+    CAPTION_LIMIT,
+    MESSAGE_LIMIT,
+    MessageChunk,
+    MessageEntity,
+    process_markdown,
+)
 
 
 def utf16_len(text: str) -> int:

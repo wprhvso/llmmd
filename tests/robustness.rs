@@ -7,6 +7,7 @@ use common::{
     balanced_pairs,
     corpus,
     corpus_seeded,
+    limit_for,
     render,
     resolve,
 };
@@ -25,7 +26,7 @@ fn random_markup_soup_never_panics_and_keeps_entities_valid() {
 fn random_markup_soup_survives_the_public_entry_point() {
     for document in corpus(1500) {
         for with_photo in [false, true] {
-            let limit = if with_photo { 1024 } else { 4096 };
+            let limit = limit_for(with_photo);
             let chunks = process_llm_markdown_sync(&document, with_photo);
             for (chunk, entities) in &chunks {
                 assert_entities_valid(chunk, entities);

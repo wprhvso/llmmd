@@ -2,10 +2,7 @@ import random
 
 import pytest
 
-from llmmd import process_markdown
-
-CAPTION_LIMIT = 1024
-MESSAGE_LIMIT = 4096
+from llmmd import CAPTION_LIMIT, MESSAGE_LIMIT, process_markdown
 
 FRAGMENTS = [
     "слово ",

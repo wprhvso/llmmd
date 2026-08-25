@@ -1,9 +1,12 @@
 mod common;
 
-use _native::to_telegram::{MessageEntity, process_llm_markdown_sync, split_message_with_entities};
-use common::{assert_entities_valid, corpus_seeded, render, slice_utf16};
+use _native::{
+    limits::{CAPTION_LIMIT, MESSAGE_LIMIT},
+    to_telegram::{MessageEntity, process_llm_markdown_sync, split_message_with_entities},
+};
+use common::{assert_entities_valid, corpus_seeded, limit_for, render, slice_utf16};
 
-const LIMITS: &[usize] = &[1, 2, 3, 8, 64, 1024, 4096];
+const LIMITS: &[usize] = &[1, 2, 3, 8, 64, CAPTION_LIMIT, MESSAGE_LIMIT];
 
 fn utf16_len(text: &str) -> usize {
     text.encode_utf16().count()
@@ -109,7 +112,7 @@ fn a_split_entity_still_covers_text_it_covered_before() {
 fn the_public_entry_point_never_returns_an_unusable_chunk() {
     for document in corpus_seeded(0x9999_0001, 800) {
         for with_photo in [false, true] {
-            let limit = if with_photo { 1024_usize } else { 4096 };
+            let limit = limit_for(with_photo);
             for (chunk, entities) in process_llm_markdown_sync(&document, with_photo) {
                 assert_ne!(chunk.trim(), "");
                 assert!(utf16_len(&chunk) <= limit);
@@ -155,7 +158,7 @@ fn a_long_document_is_split_into_deliverable_messages() {
     assert!(chunks.len() > 1, "the document should not fit one message");
 
     for (chunk, entities) in &chunks {
-        assert!(utf16_len(chunk) <= 4096);
+        assert!(utf16_len(chunk) <= MESSAGE_LIMIT);
         assert_entities_valid(chunk, entities);
         assert!(
             entities.iter().any(|entity| entity.r#type == "bold"),

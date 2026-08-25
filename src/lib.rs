@@ -4,6 +4,7 @@ use pyo3::{
 };
 
 pub mod from_markdown;
+pub mod limits;
 pub mod to_telegram;
 
 use crate::to_telegram::process_llm_markdown_sync;
@@ -45,5 +46,7 @@ fn process_markdown<'py>(
 #[pyo3(name = "_native")]
 fn native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(process_markdown, m)?)?;
+    m.add("MESSAGE_LIMIT", crate::limits::MESSAGE_LIMIT)?;
+    m.add("CAPTION_LIMIT", crate::limits::CAPTION_LIMIT)?;
     Ok(())
 }

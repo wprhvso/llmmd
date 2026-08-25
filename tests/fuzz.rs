@@ -1,7 +1,7 @@
 mod common;
 
 use _native::to_telegram::{MessageEntity, process_llm_markdown_sync};
-use common::{Rng, assert_entities_valid, render, render_chunked};
+use common::{Rng, assert_entities_valid, limit_for, render, render_chunked};
 
 const SEEDS: &[&str] = &[
     "# Заголовок\n\nТекст с **жирным**, *курсивом* и `кодом`.\n",
@@ -103,7 +103,7 @@ fn mutated_documents_render_the_same_when_streamed() {
 fn mutated_documents_survive_the_public_entry_point() {
     for document in mutants(0xF0F0_3333, 1200) {
         for with_photo in [false, true] {
-            let limit = if with_photo { 1024_usize } else { 4096 };
+            let limit = limit_for(with_photo);
             for (chunk, entities) in process_llm_markdown_sync(&document, with_photo) {
                 assert_entities_valid(&chunk, &entities);
                 assert!(chunk.encode_utf16().count() <= limit);

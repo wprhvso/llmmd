@@ -1,6 +1,9 @@
 mod common;
 
-use _native::to_telegram::{MessageEntity, process_llm_markdown_sync, split_message_with_entities};
+use _native::{
+    limits::{CAPTION_LIMIT, MESSAGE_LIMIT},
+    to_telegram::{MessageEntity, process_llm_markdown_sync, split_message_with_entities},
+};
 
 fn entity(kind: &str, offset: i64, length: i64) -> MessageEntity {
     MessageEntity {
@@ -83,7 +86,7 @@ fn empty_text_yields_no_chunks() {
 
 #[test]
 fn short_text_stays_in_one_chunk() {
-    let chunks = split_message_with_entities("hello", &[entity("bold", 0, 5)], 4096);
+    let chunks = split_message_with_entities("hello", &[entity("bold", 0, 5)], MESSAGE_LIMIT);
     assert_eq!(chunks.len(), 1);
     assert_eq!(chunks[0].0, "hello");
     assert_eq!(chunks[0].1.len(), 1);
@@ -92,11 +95,11 @@ fn short_text_stays_in_one_chunk() {
 #[test]
 fn chunks_respect_the_limit() {
     let text = "x".repeat(10_000);
-    let chunks = split_message_with_entities(&text, &[], 4096);
+    let chunks = split_message_with_entities(&text, &[], MESSAGE_LIMIT);
     assert!(chunks.len() >= 3);
     for (chunk, _) in &chunks {
         assert!(
-            utf16_len(chunk) <= 4096,
+            utf16_len(chunk) <= MESSAGE_LIMIT,
             "chunk of {} units exceeds the limit",
             utf16_len(chunk)
         );
@@ -199,12 +202,12 @@ fn process_respects_the_photo_caption_limit() {
 
     let plain = process_llm_markdown_sync(&markdown, false);
     for (chunk, _) in &plain {
-        assert!(utf16_len(chunk) <= 4096);
+        assert!(utf16_len(chunk) <= MESSAGE_LIMIT);
     }
 
     let with_photo = process_llm_markdown_sync(&markdown, true);
     for (chunk, _) in &with_photo {
-        assert!(utf16_len(chunk) <= 1024);
+        assert!(utf16_len(chunk) <= CAPTION_LIMIT);
     }
     assert!(with_photo.len() > plain.len());
 }
