@@ -876,13 +876,6 @@ impl LlmMarkdownParser {
                 }
 
                 if self.prefix_state == PrefixState::Done {
-                    if c != '\n'
-                        && matches!(self.prefix_state, PrefixState::CheckingThematicBreak { count, .. } if count >= 3)
-                    {
-                        self.found_thematic_break = true;
-                        self.prefix_buffer.clear();
-                    }
-
                     if in_strict_block {
                         self.line_containers = self.open_containers.clone();
                     } else if self.line_containers.is_empty() && !self.explicit_list_marker {

@@ -39,6 +39,14 @@ fn trailing_markers_at_end_of_input_are_not_swallowed() {
 }
 
 #[test]
+fn dashes_followed_by_text_stay_literal() {
+    for markdown in ["--- x", "*** x", "___ x", "a\n\n--- x\n\nb"] {
+        assert!(!events(markdown).contains(&Event::ThematicBreak));
+    }
+    assert_eq!(text("--- x"), "--- x");
+}
+
+#[test]
 fn an_unterminated_link_destination_does_not_grow_a_newline() {
     assert_eq!(text("a [b](http"), "a [b](http");
 }
