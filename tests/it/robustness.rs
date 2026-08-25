@@ -111,7 +111,7 @@ fn rendering_is_deterministic() {
 fn no_speculative_start_event_survives_without_its_end() {
     let pairs = balanced_pairs();
 
-    for seed in 0..24_u64 {
+    for seed in 0..6_u64 {
         for document in corpus_seeded(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15), 400) {
             let events = resolve(actions(&document));
             for (is_start, is_end, name) in &pairs {

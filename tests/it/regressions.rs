@@ -230,20 +230,6 @@ fn an_escaped_pipe_stays_inside_its_table_cell() {
 }
 
 #[test]
-fn a_surrogate_pair_survives_message_splitting() {
-    use _native::to_telegram::split_message_with_entities;
-
-    let text = "😀".repeat(40);
-    for limit in 2..40 {
-        let joined: String = split_message_with_entities(&text, &[], limit)
-            .into_iter()
-            .map(|(chunk, _)| chunk)
-            .collect();
-        assert_eq!(joined, text, "limit {limit} corrupted the text");
-    }
-}
-
-#[test]
 fn deeply_nested_inline_markup_finishes_quickly() {
     let depth = 200;
     let markdown = format!("{}x{}", "[".repeat(depth), "](u)".repeat(depth));

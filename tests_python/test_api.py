@@ -1,45 +1,35 @@
-import random
-
 import pytest
+from helpers import utf16_len
 
-from llmmd import CAPTION_LIMIT, MESSAGE_LIMIT, process_markdown
+from llmmd import (
+    CAPTION_LIMIT,
+    MESSAGE_LIMIT,
+    MessageChunk,
+    MessageEntity,
+    process_markdown,
+)
 
-FRAGMENTS = [
-    "слово ",
-    "word ",
-    "**b** ",
-    "*i* ",
-    "~~s~~ ",
-    "||sp|| ",
-    "`c` ",
-    "[l](https://e.com) ",
-    "![i](https://e.com/i.png) ",
-    "$x$ ",
-    "\n",
-    "\n\n",
-    "# h\n",
-    "- item\n",
-    "1. item\n",
-    "> quote\n",
-    "| a | b |\n|---|---|\n| 1 | 2 |\n",
-    "```py\ncode\n```\n",
-    "😀",
-    "<u>u</u> ",
-]
-
-
-def utf16_len(text: str) -> int:
-    return len(text.encode("utf-16-le")) // 2
-
-
-def documents(count: int, seed: int) -> list[str]:
-    rng = random.Random(seed)
-    return ["".join(rng.choices(FRAGMENTS, k=rng.randint(1, 60))) for _ in range(count)]
+ENTITY_TYPES = {
+    "bold",
+    "italic",
+    "underline",
+    "strikethrough",
+    "spoiler",
+    "code",
+    "pre",
+    "text_link",
+    "blockquote",
+}
 
 
 def test_the_markdown_argument_must_be_a_string() -> None:
     with pytest.raises(TypeError):
         process_markdown(None)  # pyright: ignore[reportArgumentType]
+
+
+def test_calling_without_arguments_is_an_error() -> None:
+    with pytest.raises(TypeError):
+        process_markdown()  # pyright: ignore[reportCallIssue]
 
 
 def test_the_photo_flag_can_be_passed_by_keyword() -> None:
@@ -49,9 +39,13 @@ def test_the_photo_flag_can_be_passed_by_keyword() -> None:
     )
 
 
-def test_calling_without_arguments_is_an_error() -> None:
-    with pytest.raises(TypeError):
-        process_markdown()  # pyright: ignore[reportCallIssue]
+def test_with_photo_defaults_to_false() -> None:
+    markdown = "word " * 1000
+    assert process_markdown(markdown) == process_markdown(markdown, False)
+
+
+def test_empty_markdown_yields_no_chunks() -> None:
+    assert process_markdown("") == []
 
 
 def test_a_document_of_only_whitespace_yields_no_chunks() -> None:
@@ -63,10 +57,44 @@ def test_repeated_calls_return_equal_results() -> None:
     assert process_markdown(markdown) == process_markdown(markdown)
 
 
+def test_chunk_shape_matches_the_type_stubs() -> None:
+    chunks = process_markdown("**bold** and [a](https://e.com)")
+    assert len(chunks) == 1
+
+    chunk = chunks[0]
+    assert set(chunk) == set(MessageChunk.__annotations__)
+    assert chunk["text"] == "bold and a"
+
+    for entity in chunk["entities"]:
+        assert set(entity) == set(MessageEntity.__annotations__)
+        assert isinstance(entity["type"], str)
+        assert isinstance(entity["offset"], int)
+        assert isinstance(entity["length"], int)
+        assert entity["url"] is None or isinstance(entity["url"], str)
+        assert entity["language"] is None or isinstance(entity["language"], str)
+
+
+def test_entities_address_utf16_offsets() -> None:
+    (chunk,) = process_markdown("ж😀 **b**")
+    units = chunk["text"].encode("utf-16-le")
+    (bold,) = [e for e in chunk["entities"] if e["type"] == "bold"]
+    start = bold["offset"] * 2
+    end = start + bold["length"] * 2
+    assert units[start:end].decode("utf-16-le") == "b"
+
+
+def test_code_block_carries_its_language() -> None:
+    (chunk,) = process_markdown("```python\nprint(1)\n```\n")
+    (pre,) = [e for e in chunk["entities"] if e["type"] == "pre"]
+    assert pre["language"] == "python"
+
+
 @pytest.mark.parametrize("with_photo", [False, True])
-def test_random_documents_stay_within_the_limit(with_photo: bool) -> None:
+def test_random_documents_stay_within_the_limit(
+    with_photo: bool, corpus: list[str]
+) -> None:
     limit = CAPTION_LIMIT if with_photo else MESSAGE_LIMIT
-    for markdown in documents(200, seed=20250819):
+    for markdown in corpus:
         for chunk in process_markdown(markdown, with_photo):
             size = utf16_len(chunk["text"])
             assert 0 < size <= limit
@@ -77,46 +105,23 @@ def test_random_documents_stay_within_the_limit(with_photo: bool) -> None:
                 assert entity["offset"] + entity["length"] <= size
 
 
-def test_random_documents_keep_every_visible_character() -> None:
-    for markdown in documents(200, seed=7):
+def test_random_documents_keep_every_visible_character(corpus: list[str]) -> None:
+    for markdown in corpus:
         joined = "".join(chunk["text"] for chunk in process_markdown(markdown))
         for word in ("слово", "word", "code", "quote", "item"):
             if word in markdown:
                 assert word in joined
 
 
-def test_entity_types_are_the_ones_telegram_accepts() -> None:
-    allowed = {
-        "bold",
-        "italic",
-        "underline",
-        "strikethrough",
-        "spoiler",
-        "code",
-        "pre",
-        "text_link",
-        "blockquote",
-    }
-    for markdown in documents(200, seed=99):
+def test_random_document_entities_are_well_formed(corpus: list[str]) -> None:
+    for markdown in corpus:
         for chunk in process_markdown(markdown):
             for entity in chunk["entities"]:
-                assert entity["type"] in allowed
-
-
-def test_a_link_entity_always_carries_a_url() -> None:
-    for markdown in documents(200, seed=1234):
-        for chunk in process_markdown(markdown):
-            for entity in chunk["entities"]:
+                assert entity["type"] in ENTITY_TYPES
                 if entity["type"] == "text_link":
                     assert entity["url"]
                 else:
                     assert entity["url"] is None
-
-
-def test_a_language_is_only_attached_to_a_code_block() -> None:
-    for markdown in documents(200, seed=4321):
-        for chunk in process_markdown(markdown):
-            for entity in chunk["entities"]:
                 if entity["language"] is not None:
                     assert entity["type"] == "pre"
 

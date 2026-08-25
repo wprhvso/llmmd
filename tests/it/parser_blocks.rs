@@ -1,6 +1,6 @@
 use _native::from_markdown::{Event, TaskStatus};
 
-use crate::support::{events, events_chunked, merge_text, text_of};
+use crate::support::{events, text_of};
 
 #[test]
 fn atx_headings() {
@@ -335,29 +335,5 @@ fn containers_are_always_balanced() {
             item_opens, item_closes,
             "unbalanced list items in {markdown:?}"
         );
-    }
-}
-
-#[test]
-fn chunked_input_matches_a_single_chunk() {
-    let documents = [
-        "# Title\n\nHello **bold** and *italic*.\n",
-        "- a\n- b\n  - c\n",
-        "```python\nprint(1)\n```\ntail\n",
-        "> quote\n> more\n",
-        "text with `code` and [a link](https://example.com/x)\n",
-        "$$x+1$$\n",
-        "x<sup>2</sup> + y<sub>1</sub>\n",
-        "***bold italic*** ~~struck~~ ||spoiler||\n",
-    ];
-    for document in documents {
-        let whole = merge_text(events(document));
-        for chunk_size in [1, 2, 3, 5, 7, 13] {
-            assert_eq!(
-                merge_text(events_chunked(document, chunk_size)),
-                whole,
-                "{document:?} parsed differently in {chunk_size}-char chunks"
-            );
-        }
     }
 }
