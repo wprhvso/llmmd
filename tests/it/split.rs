@@ -1,5 +1,5 @@
 use _native::{
-    limits::{CAPTION_LIMIT, MESSAGE_LIMIT},
+    limits::{CAPTION_LIMIT, MAX_ENTITIES, MESSAGE_LIMIT},
     to_telegram::{
         EntityKind,
         MessageEntity,
@@ -268,4 +268,52 @@ fn an_early_line_break_does_not_produce_a_tiny_chunk() {
             "chunk {chunk:?} wastes most of the message"
         );
     }
+}
+
+#[test]
+fn a_grapheme_cluster_is_never_cut_in_half() {
+    let text = "👨‍👩‍👧".repeat(20);
+    for limit in 2..40_usize {
+        let chunks = split_message_with_entities(&text, &[], limit);
+        let rejoined: String = chunks.iter().map(|(chunk, _)| chunk.as_str()).collect();
+        assert_eq!(rejoined, text, "limit {limit} broke a cluster");
+        for (chunk, _) in &chunks {
+            assert!(
+                !chunk.starts_with('\u{200d}') && !chunk.ends_with('\u{200d}'),
+                "limit {limit} cut on a zero-width joiner: {chunk:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_chunk_never_carries_more_entities_than_telegram_accepts() {
+    let text = "x ".repeat(400);
+    let entities: Vec<MessageEntity> = (0..400)
+        .map(|index| entity(EntityKind::Bold, index * 2, 1))
+        .collect();
+
+    for (_, chunk_entities) in split_message_with_entities(&text, &entities, MESSAGE_LIMIT) {
+        assert!(
+            chunk_entities.len() <= MAX_ENTITIES,
+            "{} entities in one chunk",
+            chunk_entities.len()
+        );
+    }
+}
+
+#[test]
+fn entities_come_back_in_document_order() {
+    let (_, entities) = _native::to_telegram::process_llm_markdown_sync(
+        "**bold *italic* rest** and `code` here",
+        false,
+    )
+    .into_iter()
+    .next()
+    .expect("one chunk");
+
+    let offsets: Vec<usize> = entities.iter().map(|entity| entity.offset).collect();
+    let mut sorted = offsets.clone();
+    sorted.sort_unstable();
+    assert_eq!(offsets, sorted, "{entities:?}");
 }

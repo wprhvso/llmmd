@@ -1,8 +1,11 @@
+use std::cmp::Reverse;
+
 use comfy_table::{Table, presets::UTF8_FULL};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
     from_markdown::{Action, Event, LlmMarkdownParser, TaskStatus},
-    limits::{CAPTION_LIMIT, MESSAGE_LIMIT},
+    limits::{CAPTION_LIMIT, MAX_ENTITIES, MESSAGE_LIMIT},
 };
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
@@ -619,6 +622,9 @@ impl TelegramEntityBuilder {
             .filter_map(|active| active.close_at(end))
             .collect();
         state.entities.extend(dangling);
+        state
+            .entities
+            .sort_by_key(|entity| (entity.offset, Reverse(entity.length)));
 
         (state.text, state.entities)
     }
@@ -630,88 +636,142 @@ pub fn split_message_with_entities(
     entities: &[MessageEntity],
     limit: usize,
 ) -> Vec<(String, Vec<MessageEntity>)> {
-    if text.is_empty() {
+    if text.is_empty() || limit == 0 {
         return Vec::new();
     }
 
-    let utf16_chars: Vec<u16> = text.encode_utf16().collect();
     let mut result = Vec::new();
-    let mut current_start = 0;
+    let mut start_byte = 0_usize;
+    let mut start_utf16 = 0_usize;
 
-    while current_start < utf16_chars.len() {
-        let remaining = utf16_chars.len().saturating_sub(current_start);
-        let chunk_size = if remaining <= limit {
-            remaining
-        } else {
-            let slice_end = current_start.saturating_add(limit).min(utf16_chars.len());
-            let slice = utf16_chars.get(current_start..slice_end).unwrap_or(&[]);
-            let mut cut = limit;
+    while start_byte < text.len() {
+        let rest = text.get(start_byte..).unwrap_or_default();
+        let mut cut = cut_within_limit(rest, limit);
+        cut = clamp_to_entity_budget(rest, entities, start_utf16, cut);
 
-            let earliest_useful_cut = limit / 2;
-            let break_at = |wanted: u16| {
-                slice
-                    .iter()
-                    .rposition(|&character| character == wanted)
-                    .map(|index| index.saturating_add(1))
-                    .filter(|candidate| *candidate >= earliest_useful_cut)
-            };
-            if let Some(candidate) =
-                break_at(u16::from(b'\n')).or_else(|| break_at(u16::from(b' ')))
-            {
-                cut = candidate;
-            }
+        let end_utf16 = start_utf16.saturating_add(cut.utf16);
+        let chunk = rest.get(..cut.byte).unwrap_or_default();
+        let chunk_entities = clip_entities(entities, start_utf16, end_utf16);
 
-            let cut_idx = current_start.saturating_add(cut);
-            if let Some(&character) = utf16_chars.get(cut_idx)
-                && (0xDC00..=0xDFFF).contains(&character)
-            {
-                cut = cut.saturating_sub(1);
-            }
-
-            if cut == 0 {
-                let starts_pair = utf16_chars
-                    .get(current_start)
-                    .is_some_and(|&unit| (0xD800..=0xDBFF).contains(&unit));
-                cut = if starts_pair { 2 } else { 1 };
-            }
-
-            cut.min(remaining)
-        };
-
-        let chunk_end = current_start.saturating_add(chunk_size);
-        let chunk_utf16 = utf16_chars.get(current_start..chunk_end).unwrap_or(&[]);
-        let chunk_text = String::from_utf16_lossy(chunk_utf16);
-
-        let mut chunk_entities = Vec::new();
-        for entity in entities {
-            let entity_end = entity.offset.saturating_add(entity.length);
-
-            if entity_end <= current_start || entity.offset >= chunk_end {
-                continue;
-            }
-
-            let overlap_start = entity.offset.max(current_start);
-            let overlap_end = entity_end.min(chunk_end);
-            let new_length = overlap_end.saturating_sub(overlap_start);
-
-            if new_length > 0 {
-                chunk_entities.push(MessageEntity {
-                    kind: entity.kind,
-                    offset: entity.offset.saturating_sub(current_start),
-                    length: new_length,
-                    url: entity.url.clone(),
-                    language: entity.language.clone(),
-                });
-            }
+        if !chunk.trim().is_empty() {
+            result.push((chunk.to_string(), chunk_entities));
         }
 
-        if !chunk_text.trim().is_empty() {
-            result.push((chunk_text, chunk_entities));
-        }
-        current_start = chunk_end;
+        start_byte = start_byte.saturating_add(cut.byte);
+        start_utf16 = end_utf16;
     }
 
     result
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Cut {
+    byte: usize,
+    utf16: usize,
+}
+
+fn cut_within_limit(rest: &str, limit: usize) -> Cut {
+    let earliest_useful = limit / 2;
+    let mut taken = Cut { byte: 0, utf16: 0 };
+    let mut after_space: Option<Cut> = None;
+    let mut after_newline: Option<Cut> = None;
+    let mut truncated = false;
+
+    for cluster in rest.graphemes(true) {
+        let width = cluster.encode_utf16().count();
+        if taken.utf16.saturating_add(width) > limit && taken.byte > 0 {
+            truncated = true;
+            break;
+        }
+
+        taken = Cut {
+            byte: taken.byte.saturating_add(cluster.len()),
+            utf16: taken.utf16.saturating_add(width),
+        };
+
+        if cluster.ends_with('\n') {
+            after_newline = Some(taken);
+        } else if cluster.ends_with(' ') {
+            after_space = Some(taken);
+        }
+    }
+
+    if !truncated {
+        return taken;
+    }
+
+    after_newline
+        .or(after_space)
+        .filter(|candidate| candidate.utf16 >= earliest_useful)
+        .unwrap_or(taken)
+}
+
+fn clamp_to_entity_budget(
+    rest: &str,
+    entities: &[MessageEntity],
+    start_utf16: usize,
+    cut: Cut,
+) -> Cut {
+    let end_utf16 = start_utf16.saturating_add(cut.utf16);
+    let mut overlapping = entities
+        .iter()
+        .filter(|entity| covers(entity, start_utf16, end_utf16));
+    let Some(overflowing) = overlapping.nth(MAX_ENTITIES) else {
+        return cut;
+    };
+
+    let boundary = overflowing.offset;
+    if boundary <= start_utf16 || boundary >= end_utf16 {
+        return cut;
+    }
+
+    let wanted = boundary.saturating_sub(start_utf16);
+    let mut shortened = Cut { byte: 0, utf16: 0 };
+    for cluster in rest.graphemes(true) {
+        if shortened.utf16 >= wanted {
+            break;
+        }
+        shortened = Cut {
+            byte: shortened.byte.saturating_add(cluster.len()),
+            utf16: shortened
+                .utf16
+                .saturating_add(cluster.encode_utf16().count()),
+        };
+    }
+
+    if shortened.byte == 0 { cut } else { shortened }
+}
+
+fn covers(entity: &MessageEntity, start_utf16: usize, end_utf16: usize) -> bool {
+    let entity_end = entity.offset.saturating_add(entity.length);
+    entity.offset < end_utf16 && entity_end > start_utf16
+}
+
+fn clip_entities(
+    entities: &[MessageEntity],
+    start_utf16: usize,
+    end_utf16: usize,
+) -> Vec<MessageEntity> {
+    entities
+        .iter()
+        .filter(|entity| covers(entity, start_utf16, end_utf16))
+        .filter_map(|entity| {
+            let entity_end = entity.offset.saturating_add(entity.length);
+            let overlap_start = entity.offset.max(start_utf16);
+            let overlap_end = entity_end.min(end_utf16);
+            let length = overlap_end.saturating_sub(overlap_start);
+            if length == 0 {
+                return None;
+            }
+            Some(MessageEntity {
+                kind: entity.kind,
+                offset: overlap_start.saturating_sub(start_utf16),
+                length,
+                url: entity.url.clone(),
+                language: entity.language.clone(),
+            })
+        })
+        .collect()
 }
 
 #[must_use]

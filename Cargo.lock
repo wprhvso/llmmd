@@ -97,6 +97,7 @@ version = "0.1.7"
 dependencies = [
  "comfy-table",
  "pyo3",
+ "unicode-segmentation",
 ]
 
 [[package]]

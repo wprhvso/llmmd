@@ -48,5 +48,6 @@ fn native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(process_markdown, m)?)?;
     m.add("MESSAGE_LIMIT", crate::limits::MESSAGE_LIMIT)?;
     m.add("CAPTION_LIMIT", crate::limits::CAPTION_LIMIT)?;
+    m.add("MAX_ENTITIES", crate::limits::MAX_ENTITIES)?;
     Ok(())
 }

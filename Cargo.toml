@@ -16,6 +16,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 comfy-table = "7.2"
 pyo3 = { version = "0.29", features = ["extension-module", "abi3-py314"] }
+unicode-segmentation = "1.13"
 
 [profile.release]
 opt-level = 3
