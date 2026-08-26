@@ -182,6 +182,11 @@ const INLINE_RECURSION_LIMIT: u16 = 32;
 
 const INLINE_REPARSE_BUDGET_PER_CHAR: usize = 8;
 
+fn strip_delimiters<'a>(content: &'a str, start: &str, end: &str) -> &'a str {
+    let trimmed = content.strip_prefix(start).unwrap_or(content);
+    trimmed.strip_suffix(end).unwrap_or(trimmed)
+}
+
 const fn is_verbatim(state: &State) -> bool {
     matches!(
         state,
@@ -435,6 +440,31 @@ impl LlmMarkdownParser {
         }
     }
 
+    fn take_speculation(&mut self, at: usize, out: &mut Vec<Action>) -> String {
+        let spec = self.speculations.remove(at);
+        self.speculations.truncate(at);
+        self.rollback_to(spec.start_event_index, out);
+        spec.raw_content
+    }
+
+    fn push_wrapped(
+        &mut self,
+        open: Vec<Event>,
+        inner: &str,
+        close: Vec<Event>,
+        out: &mut Vec<Action>,
+    ) {
+        for event in open {
+            self.push_event(event, out);
+        }
+        for event in self.parse_inline(inner) {
+            self.push_event(event, out);
+        }
+        for event in close {
+            self.push_event(event, out);
+        }
+    }
+
     fn resolve_link(
         &mut self,
         spec_idx: usize,
@@ -443,59 +473,35 @@ impl LlmMarkdownParser {
         out: &mut Vec<Action>,
     ) {
         self.flush_text(out);
-        if let Some(pos) = self
+        let Some(position) = self
             .speculations
             .iter()
             .position(|s| s.start_event_index == spec_idx)
-        {
-            let spec = self.speculations.remove(pos);
-            self.speculations.truncate(pos);
+        else {
+            return;
+        };
 
-            self.rollback_to(spec.start_event_index, out);
+        let content = self.take_speculation(position, out);
+        let (opening, open, close) = match kind {
+            SpeculationKind::LinkLabel => (
+                "[",
+                Event::LinkStart {
+                    url: url.to_string(),
+                },
+                Event::LinkEnd,
+            ),
+            SpeculationKind::ImageLabel => (
+                "![",
+                Event::ImageStart {
+                    url: url.to_string(),
+                },
+                Event::ImageEnd,
+            ),
+            _ => return,
+        };
 
-            let content = spec.raw_content;
-
-            let prefix = match kind {
-                SpeculationKind::LinkLabel => "[",
-                SpeculationKind::ImageLabel => "![",
-                _ => "",
-            };
-            let suffix = format!("]({url})");
-
-            let c1 = content.strip_prefix(prefix).unwrap_or(&content);
-            let c2 = c1.strip_suffix(&suffix).unwrap_or(c1);
-            let label = c2.to_string();
-
-            match kind {
-                SpeculationKind::LinkLabel => {
-                    self.push_event(
-                        Event::LinkStart {
-                            url: url.to_string(),
-                        },
-                        out,
-                    );
-                    let inner_actions = self.parse_inline(&label);
-                    for ev in inner_actions {
-                        self.push_event(ev, out);
-                    }
-                    self.push_event(Event::LinkEnd, out);
-                }
-                SpeculationKind::ImageLabel => {
-                    self.push_event(
-                        Event::ImageStart {
-                            url: url.to_string(),
-                        },
-                        out,
-                    );
-                    let inner_actions = self.parse_inline(&label);
-                    for ev in inner_actions {
-                        self.push_event(ev, out);
-                    }
-                    self.push_event(Event::ImageEnd, out);
-                }
-                _ => {}
-            }
-        }
+        let label = strip_delimiters(&content, opening, &format!("]({url})")).to_string();
+        self.push_wrapped(vec![open], &label, vec![close], out);
     }
 
     fn resolve_speculation(
@@ -506,73 +512,57 @@ impl LlmMarkdownParser {
         out: &mut Vec<Action>,
     ) {
         self.flush_text(out);
-        if let Some(idx) = self.speculations.iter().rposition(|s| s.kind == kind) {
-            let spec = self.speculations.remove(idx);
-            self.speculations.truncate(idx);
+        let Some(index) = self.speculations.iter().rposition(|s| s.kind == kind) else {
+            return;
+        };
 
-            self.rollback_to(spec.start_event_index, out);
+        let content = self.take_speculation(index, out);
+        let inner = strip_delimiters(&content, start_delim, end_delim).to_string();
 
-            let content = spec.raw_content;
-
-            let c1 = content.strip_prefix(start_delim).unwrap_or(&content);
-            let c2 = c1.strip_suffix(end_delim).unwrap_or(c1);
-            let content_str = c2.to_string();
-
-            match kind {
-                SpeculationKind::MathDollar => {
-                    self.push_event(
-                        Event::InlineMath {
-                            delimiter: "$".into(),
-                            content: content_str,
-                        },
-                        out,
-                    );
-                }
-                SpeculationKind::MathParenthesis => {
-                    self.push_event(
-                        Event::InlineMath {
-                            delimiter: "\\(".into(),
-                            content: content_str,
-                        },
-                        out,
-                    );
-                }
-                SpeculationKind::Code(_) => {
-                    self.push_event(Event::InlineCode(content_str), out);
-                }
-                SpeculationKind::BoldItalic => {
-                    self.push_event(Event::BoldStart, out);
-                    self.push_event(Event::ItalicStart, out);
-                    let inner_actions = self.parse_inline(&content_str);
-                    for ev in inner_actions {
-                        self.push_event(ev, out);
-                    }
-                    self.push_event(Event::ItalicEnd, out);
-                    self.push_event(Event::BoldEnd, out);
-                }
-                _ => {
-                    let (start_ev, end_ev) = match kind {
-                        SpeculationKind::Bold => (Event::BoldStart, Event::BoldEnd),
-                        SpeculationKind::Italic => (Event::ItalicStart, Event::ItalicEnd),
-                        SpeculationKind::Strikethrough =>
-                            (Event::StrikethroughStart, Event::StrikethroughEnd),
-                        SpeculationKind::Spoiler => (Event::SpoilerStart, Event::SpoilerEnd),
-                        SpeculationKind::Underline => (Event::UnderlineStart, Event::UnderlineEnd),
-                        SpeculationKind::Superscript =>
-                            (Event::SuperscriptStart, Event::SuperscriptEnd),
-                        SpeculationKind::Subscript => (Event::SubscriptStart, Event::SubscriptEnd),
-                        _ => unreachable!(),
-                    };
-
-                    self.push_event(start_ev, out);
-                    let inner_actions = self.parse_inline(&content_str);
-                    for ev in inner_actions {
-                        self.push_event(ev, out);
-                    }
-                    self.push_event(end_ev, out);
-                }
+        let (open, close) = match kind {
+            SpeculationKind::MathDollar => {
+                self.push_event(
+                    Event::InlineMath {
+                        delimiter: "$".into(),
+                        content: inner,
+                    },
+                    out,
+                );
+                return;
             }
-        }
+            SpeculationKind::MathParenthesis => {
+                self.push_event(
+                    Event::InlineMath {
+                        delimiter: "\\(".into(),
+                        content: inner,
+                    },
+                    out,
+                );
+                return;
+            }
+            SpeculationKind::Code(_) => {
+                self.push_event(Event::InlineCode(inner), out);
+                return;
+            }
+            SpeculationKind::BoldItalic => (
+                vec![Event::BoldStart, Event::ItalicStart],
+                vec![Event::ItalicEnd, Event::BoldEnd],
+            ),
+            SpeculationKind::Bold => (vec![Event::BoldStart], vec![Event::BoldEnd]),
+            SpeculationKind::Italic => (vec![Event::ItalicStart], vec![Event::ItalicEnd]),
+            SpeculationKind::Strikethrough => (
+                vec![Event::StrikethroughStart],
+                vec![Event::StrikethroughEnd],
+            ),
+            SpeculationKind::Spoiler => (vec![Event::SpoilerStart], vec![Event::SpoilerEnd]),
+            SpeculationKind::Underline => (vec![Event::UnderlineStart], vec![Event::UnderlineEnd]),
+            SpeculationKind::Superscript =>
+                (vec![Event::SuperscriptStart], vec![Event::SuperscriptEnd]),
+            SpeculationKind::Subscript => (vec![Event::SubscriptStart], vec![Event::SubscriptEnd]),
+            SpeculationKind::LinkLabel | SpeculationKind::ImageLabel => return,
+        };
+
+        self.push_wrapped(open, &inner, close, out);
     }
 
     fn normalize_newlines(&mut self, chunk: &str) -> String {
