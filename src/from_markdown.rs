@@ -174,9 +174,28 @@ enum SpeculationKind {
 
 const MAX_HTML_TAG_LEN: usize = 10;
 
+const SPACES_PER_LIST_LEVEL: u8 = 2;
+const TAB_WIDTH: u8 = 4;
+const MIN_THEMATIC_BREAK_MARKERS: u8 = 3;
+const MIN_FENCE_BACKTICKS: u8 = 3;
+const MAX_EMPHASIS_MARKERS: u8 = 3;
+const MAX_HEADING_LEVEL: u8 = 6;
+
 const INLINE_RECURSION_LIMIT: u16 = 32;
 
 const INLINE_REPARSE_BUDGET_PER_CHAR: usize = 8;
+
+const fn is_verbatim(state: &State) -> bool {
+    matches!(
+        state,
+        State::InsideCodeBlock { .. }
+            | State::CheckingBlockEnd { .. }
+            | State::InsideDisplayMathDollar
+            | State::CheckingDisplayMathDollarEnd
+            | State::InsideDisplayMathBracket
+            | State::CheckingDisplayMathBracketEnd
+    )
+}
 
 const fn can_close(previous: char) -> bool {
     !previous.is_whitespace()
@@ -294,12 +313,12 @@ impl LlmMarkdownParser {
             .iter()
             .filter(|&&container| matches!(container, Container::List { .. }))
             .count();
-        u8::try_from(levels.saturating_mul(2)).unwrap_or(u8::MAX)
+        u8::try_from(levels.saturating_mul(usize::from(SPACES_PER_LIST_LEVEL))).unwrap_or(u8::MAX)
     }
 
     fn inherit_indented_parents(&mut self) {
         let base = self.line_containers.len();
-        let levels = usize::from(self.current_indent / 2);
+        let levels = usize::from(self.current_indent / SPACES_PER_LIST_LEVEL);
         let keep = base.saturating_add(levels).min(self.open_containers.len());
         for index in base..keep {
             if let Some(&container) = self.open_containers.get(index) {
@@ -345,6 +364,26 @@ impl LlmMarkdownParser {
             return;
         }
         self.emit(event, out);
+    }
+
+    fn close_containers_from(&mut self, floor: usize, out: &mut Vec<Action>) {
+        while self.open_containers.len() > floor {
+            match self.open_containers.pop() {
+                Some(Container::Blockquote) => self.push_event(Event::BlockquoteEnd, out),
+                Some(Container::List { .. }) => {
+                    self.push_event(Event::ListItemEnd, out);
+                    self.push_event(Event::ListEnd, out);
+                }
+                None => break,
+            }
+        }
+    }
+
+    fn rollback_to(&mut self, index: usize, out: &mut Vec<Action>) {
+        let count = self.global_event_counter.saturating_sub(index);
+        if count > 0 {
+            self.push_rollback(count, out);
+        }
     }
 
     fn push_rollback(&mut self, count: usize, out: &mut Vec<Action>) {
@@ -405,12 +444,7 @@ impl LlmMarkdownParser {
             let spec = self.speculations.remove(pos);
             self.speculations.truncate(pos);
 
-            let rollback = self
-                .global_event_counter
-                .saturating_sub(spec.start_event_index);
-            if rollback > 0 {
-                self.push_rollback(rollback, out);
-            }
+            self.rollback_to(spec.start_event_index, out);
 
             let content = spec.raw_content;
 
@@ -469,12 +503,7 @@ impl LlmMarkdownParser {
             let spec = self.speculations.remove(idx);
             self.speculations.truncate(idx);
 
-            let rollback = self
-                .global_event_counter
-                .saturating_sub(spec.start_event_index);
-            if rollback > 0 {
-                self.push_rollback(rollback, out);
-            }
+            self.rollback_to(spec.start_event_index, out);
 
             let content = spec.raw_content;
 
@@ -663,15 +692,7 @@ impl LlmMarkdownParser {
         for c in chunk.chars() {
             let mut process_as_text = false;
 
-            let in_strict_block = matches!(
-                self.state,
-                State::InsideCodeBlock { .. }
-                    | State::CheckingBlockEnd { .. }
-                    | State::InsideDisplayMathDollar
-                    | State::CheckingDisplayMathDollarEnd
-                    | State::InsideDisplayMathBracket
-                    | State::CheckingDisplayMathBracketEnd
-            );
+            let in_strict_block = is_verbatim(&self.state);
 
             if self.prefix_state == PrefixState::Done || self.inline_only {
                 process_as_text = !self.found_thematic_break;
@@ -722,7 +743,7 @@ impl LlmMarkdownParser {
                             self.current_indent = self.current_indent.saturating_add(1);
                             continue;
                         } else if c == '\t' {
-                            self.current_indent = self.current_indent.saturating_add(4);
+                            self.current_indent = self.current_indent.saturating_add(TAB_WIDTH);
                             continue;
                         } else if c == '>' {
                             self.inherit_indented_parents();
@@ -777,7 +798,9 @@ impl LlmMarkdownParser {
                             self.prefix_buffer.push(c);
                             continue;
                         } else if c == '\n' {
-                            if count >= 3 && Self::is_thematic_marker(marker) {
+                            if count >= MIN_THEMATIC_BREAK_MARKERS
+                                && Self::is_thematic_marker(marker)
+                            {
                                 self.found_thematic_break = true;
                                 self.prefix_buffer.clear();
                             }
@@ -923,18 +946,7 @@ impl LlmMarkdownParser {
                     {
                         self.flush_text(&mut actions);
 
-                        let to_close = self.open_containers.get(common..).unwrap_or(&[]).to_vec();
-                        for container in to_close.into_iter().rev() {
-                            match container {
-                                Container::Blockquote => {
-                                    self.push_event(Event::BlockquoteEnd, &mut actions);
-                                }
-                                Container::List { .. } => {
-                                    self.push_event(Event::ListItemEnd, &mut actions);
-                                    self.push_event(Event::ListEnd, &mut actions);
-                                }
-                            }
-                        }
+                        self.close_containers_from(common, &mut actions);
                     }
 
                     let to_open = self.line_containers.get(common..).unwrap_or(&[]).to_vec();
@@ -1008,15 +1020,7 @@ impl LlmMarkdownParser {
                     self.speculations.clear();
                 }
 
-                let next_in_strict = matches!(
-                    self.state,
-                    State::InsideCodeBlock { .. }
-                        | State::CheckingBlockEnd { .. }
-                        | State::InsideDisplayMathDollar
-                        | State::CheckingDisplayMathDollarEnd
-                        | State::InsideDisplayMathBracket
-                        | State::CheckingDisplayMathBracketEnd
-                );
+                let next_in_strict = is_verbatim(&self.state);
 
                 if self.inline_only {
                     self.prefix_state = PrefixState::Done;
@@ -1032,12 +1036,7 @@ impl LlmMarkdownParser {
                             && self.state == State::NormalText
                             && self.last_line_event_index >= self.block_floor
                         {
-                            let rollback_count = self
-                                .global_event_counter
-                                .saturating_sub(self.last_line_event_index);
-                            if rollback_count > 0 {
-                                self.push_rollback(rollback_count, &mut actions);
-                            }
+                            self.rollback_to(self.last_line_event_index, &mut actions);
 
                             self.push_event(Event::TableStart, &mut actions);
                             let row = self.last_line_raw.clone();
@@ -1045,22 +1044,12 @@ impl LlmMarkdownParser {
                             self.in_table = true;
                         } else if self.in_table {
                             if Self::is_table_row(&self.current_line_raw) {
-                                let rollback_count = self
-                                    .global_event_counter
-                                    .saturating_sub(self.current_line_event_index);
-                                if rollback_count > 0 {
-                                    self.push_rollback(rollback_count, &mut actions);
-                                }
+                                self.rollback_to(self.current_line_event_index, &mut actions);
                                 let row = self.current_line_raw.clone();
                                 self.emit_parsed_table_row(&row, false, &mut actions);
                             } else {
                                 self.in_table = false;
-                                let rollback_count = self
-                                    .global_event_counter
-                                    .saturating_sub(self.current_line_event_index);
-                                if rollback_count > 0 {
-                                    self.push_rollback(rollback_count, &mut actions);
-                                }
+                                self.rollback_to(self.current_line_event_index, &mut actions);
                                 self.push_event(Event::TableEnd, &mut actions);
 
                                 let raw_line = self.current_line_raw.clone();
@@ -1126,7 +1115,8 @@ impl LlmMarkdownParser {
                 | State::CheckingHeading { .. }
         ) || matches!(
             self.state,
-            State::CheckingBackticks { count, is_line_start } if !(is_line_start && count >= 3)
+            State::CheckingBackticks { count, is_line_start }
+                if !(is_line_start && count >= MIN_FENCE_BACKTICKS)
         ) {
             self.push_char('\n', &mut actions);
             if self.buffer.ends_with('\n') {
@@ -1135,7 +1125,7 @@ impl LlmMarkdownParser {
         }
 
         if let PrefixState::CheckingThematicBreak { marker, count } = self.prefix_state
-            && count >= 3
+            && count >= MIN_THEMATIC_BREAK_MARKERS
             && Self::is_thematic_marker(marker)
         {
             self.found_thematic_break = true;
@@ -1144,20 +1134,7 @@ impl LlmMarkdownParser {
 
             let common = self.open_containers.len().saturating_sub(1);
             self.flush_text(&mut actions);
-            let to_close = self.open_containers.get(common..).unwrap_or(&[]).to_vec();
-            for container in to_close.into_iter().rev() {
-                match container {
-                    Container::Blockquote => {
-                        self.push_event(Event::BlockquoteEnd, &mut actions);
-                    }
-                    Container::List { .. } => {
-                        self.push_event(Event::ListItemEnd, &mut actions);
-                        self.push_event(Event::ListEnd, &mut actions);
-                    }
-                }
-            }
-
-            self.open_containers.truncate(common);
+            self.close_containers_from(common, &mut actions);
             self.push_event(Event::ThematicBreak, &mut actions);
         }
 
@@ -1182,12 +1159,7 @@ impl LlmMarkdownParser {
 
         if self.in_table {
             if self.state == State::NormalText && Self::is_table_row(&self.current_line_raw) {
-                let rollback_count = self
-                    .global_event_counter
-                    .saturating_sub(self.current_line_event_index);
-                if rollback_count > 0 {
-                    self.push_rollback(rollback_count, &mut actions);
-                }
+                self.rollback_to(self.current_line_event_index, &mut actions);
                 let row = self.current_line_raw.clone();
                 self.emit_parsed_table_row(&row, false, &mut actions);
             }
@@ -1199,7 +1171,7 @@ impl LlmMarkdownParser {
             State::CheckingBackticks {
                 count,
                 is_line_start,
-            } if is_line_start && count >= 3 => {
+            } if is_line_start && count >= MIN_FENCE_BACKTICKS => {
                 self.push_event(Event::CodeBlockStart(String::new()), &mut actions);
                 self.push_event(Event::CodeBlockEnd, &mut actions);
             }
@@ -1228,17 +1200,7 @@ impl LlmMarkdownParser {
             _ => {}
         }
 
-        let to_close = self.open_containers.clone();
-        for container in to_close.into_iter().rev() {
-            match container {
-                Container::Blockquote => self.push_event(Event::BlockquoteEnd, &mut actions),
-                Container::List { .. } => {
-                    self.push_event(Event::ListItemEnd, &mut actions);
-                    self.push_event(Event::ListEnd, &mut actions);
-                }
-            }
-        }
-        self.open_containers.clear();
+        self.close_containers_from(0, &mut actions);
         self.rewind();
 
         ChunkResult { actions }
@@ -1472,7 +1434,7 @@ impl LlmMarkdownParser {
                             marker,
                         };
                     } else {
-                        if count > 3 {
+                        if count > MAX_EMPHASIS_MARKERS {
                             self.buffer
                                 .push_str(&marker.to_string().repeat(usize::from(count)));
                             self.flush_text(out);
@@ -1585,7 +1547,7 @@ impl LlmMarkdownParser {
                             count: count.saturating_add(1),
                             is_line_start,
                         };
-                    } else if is_line_start && count >= 3 && !self.inline_only {
+                    } else if is_line_start && count >= MIN_FENCE_BACKTICKS && !self.inline_only {
                         self.state = State::ReadingCodeInfo {
                             opening_count: count,
                         };
@@ -1676,7 +1638,7 @@ impl LlmMarkdownParser {
                     is_line_start,
                 } =>
                     if c == '#' {
-                        if count < 6 {
+                        if count < MAX_HEADING_LEVEL {
                             self.state = State::CheckingHeading {
                                 count: count.saturating_add(1),
                                 is_line_start,
