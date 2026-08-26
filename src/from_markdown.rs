@@ -367,6 +367,12 @@ impl LlmMarkdownParser {
         self.emit(event, out);
     }
 
+    fn push_repeated(&mut self, marker: char, count: u8) {
+        for _ in 0..count {
+            self.buffer.push(marker);
+        }
+    }
+
     fn close_containers_from(&mut self, floor: usize, out: &mut Vec<Action>) {
         while self.open_containers.len() > floor {
             match self.open_containers.pop() {
@@ -1152,8 +1158,7 @@ impl LlmMarkdownParser {
         } = self.state
             && current_count < opening_count
         {
-            self.buffer
-                .push_str(&"`".repeat(usize::from(current_count)));
+            self.push_repeated('`', current_count);
         }
 
         self.flush_text(&mut actions);
@@ -1427,8 +1432,7 @@ impl LlmMarkdownParser {
                         };
                     } else {
                         if count > MAX_EMPHASIS_MARKERS {
-                            self.buffer
-                                .push_str(&marker.to_string().repeat(usize::from(count)));
+                            self.push_repeated(marker, count);
                             self.flush_text(out);
                             self.state = State::NormalText;
                             reprocess = true;
@@ -1499,7 +1503,7 @@ impl LlmMarkdownParser {
                                 self.flush_text(out);
                             }
                         } else {
-                            self.buffer.push_str(&"~".repeat(usize::from(count)));
+                            self.push_repeated('~', count);
                             self.flush_text(out);
                         }
                         self.state = State::NormalText;
@@ -1523,7 +1527,7 @@ impl LlmMarkdownParser {
                                 self.flush_text(out);
                             }
                         } else {
-                            self.buffer.push_str(&"|".repeat(usize::from(count)));
+                            self.push_repeated('|', count);
                             self.flush_text(out);
                         }
                         self.state = State::NormalText;
@@ -1636,7 +1640,7 @@ impl LlmMarkdownParser {
                                 is_line_start,
                             };
                         } else {
-                            self.buffer.push_str(&"#".repeat(usize::from(count) + 1));
+                            self.push_repeated('#', count.saturating_add(1));
                             self.state = State::NormalText;
                         }
                     } else if c == ' ' || c == '\t' {
@@ -1644,12 +1648,12 @@ impl LlmMarkdownParser {
                             self.push_event(Event::HeadingStart { level: count }, out);
                             self.state = State::InsideHeading;
                         } else {
-                            self.buffer.push_str(&"#".repeat(usize::from(count)));
+                            self.push_repeated('#', count);
                             self.buffer.push(c);
                             self.state = State::NormalText;
                         }
                     } else {
-                        self.buffer.push_str(&"#".repeat(usize::from(count)));
+                        self.push_repeated('#', count);
                         self.state = State::NormalText;
                         reprocess = true;
                     },
@@ -1702,8 +1706,7 @@ impl LlmMarkdownParser {
                             self.push_event(Event::CodeBlockEnd, out);
                             self.state = State::NormalText;
                         } else {
-                            self.buffer
-                                .push_str(&"`".repeat(usize::from(current_count)));
+                            self.push_repeated('`', current_count);
                             self.state = State::InsideCodeBlock { opening_count };
                         }
                         reprocess = true;
