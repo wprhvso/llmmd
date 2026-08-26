@@ -130,6 +130,12 @@ enum TaskBox {
     Space,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrefixStep {
+    Consumed,
+    Finished,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum PrefixState {
     Scan,
@@ -675,6 +681,226 @@ impl LlmMarkdownParser {
         self.push_event(Event::TableRowEnd, out);
     }
 
+    fn scan_prefix(&mut self, c: char) -> PrefixStep {
+        match self.prefix_state {
+            PrefixState::StrictScan {
+                quotes_stripped,
+                space_allowed,
+                indent_stripped,
+            } => {
+                let expected = u8::try_from(
+                    self.open_containers
+                        .iter()
+                        .filter(|&&con| con == Container::Blockquote)
+                        .count(),
+                )
+                .unwrap_or(u8::MAX);
+
+                if c == '>' && quotes_stripped < expected {
+                    self.prefix_state = PrefixState::StrictScan {
+                        quotes_stripped: quotes_stripped.saturating_add(1),
+                        space_allowed: true,
+                        indent_stripped,
+                    };
+                    return PrefixStep::Consumed;
+                } else if (c == ' ' || c == '\t') && space_allowed {
+                    self.prefix_state = PrefixState::StrictScan {
+                        quotes_stripped,
+                        space_allowed: false,
+                        indent_stripped,
+                    };
+                    return PrefixStep::Consumed;
+                } else if (c == ' ' || c == '\t') && quotes_stripped < expected {
+                    return PrefixStep::Consumed;
+                } else if (c == ' ' || c == '\t') && indent_stripped < self.list_indent() {
+                    let width = if c == '\t' { 4 } else { 1 };
+                    self.prefix_state = PrefixState::StrictScan {
+                        quotes_stripped,
+                        space_allowed,
+                        indent_stripped: indent_stripped.saturating_add(width),
+                    };
+                    return PrefixStep::Consumed;
+                }
+                self.prefix_state = PrefixState::Done;
+            }
+            PrefixState::Scan => {
+                if c == ' ' {
+                    self.current_indent = self.current_indent.saturating_add(1);
+                    return PrefixStep::Consumed;
+                } else if c == '\t' {
+                    self.current_indent = self.current_indent.saturating_add(TAB_WIDTH);
+                    return PrefixStep::Consumed;
+                } else if c == '>' {
+                    self.inherit_indented_parents();
+                    self.line_containers.push(Container::Blockquote);
+                    self.current_indent = 0;
+                    return PrefixStep::Consumed;
+                } else if c == '*' || c == '_' {
+                    self.prefix_buffer.push(c);
+                    self.prefix_state = PrefixState::CheckingThematicBreak {
+                        marker: c,
+                        count: 1,
+                    };
+                    return PrefixStep::Consumed;
+                } else if c == '-' || c == '+' {
+                    self.prefix_buffer.push(c);
+                    self.prefix_state = PrefixState::CheckDash;
+                    return PrefixStep::Consumed;
+                } else if c.is_ascii_digit() {
+                    self.prefix_buffer.push(c);
+                    self.prefix_state = PrefixState::ReadDigits;
+                    return PrefixStep::Consumed;
+                }
+                self.prefix_state = PrefixState::Done;
+            }
+            PrefixState::CheckDash => {
+                if c == ' ' || c == '\t' {
+                    self.prefix_buffer.push(c);
+                    self.prefix_state = PrefixState::CheckingThematicBreak {
+                        marker: self.prefix_buffer.chars().next().unwrap_or('-'),
+                        count: 1,
+                    };
+                    return PrefixStep::Consumed;
+                } else if c == self.prefix_buffer.chars().next().unwrap_or('-') {
+                    self.prefix_buffer.push(c);
+                    self.prefix_state = PrefixState::CheckingThematicBreak {
+                        marker: c,
+                        count: 2,
+                    };
+                    return PrefixStep::Consumed;
+                }
+                self.prefix_state = PrefixState::Done;
+            }
+            PrefixState::CheckingThematicBreak { marker, count } =>
+                if c == marker {
+                    self.prefix_buffer.push(c);
+                    self.prefix_state = PrefixState::CheckingThematicBreak {
+                        marker,
+                        count: count.saturating_add(1),
+                    };
+                    return PrefixStep::Consumed;
+                } else if c == ' ' || c == '\t' {
+                    self.prefix_buffer.push(c);
+                    return PrefixStep::Consumed;
+                } else if c == '\n' {
+                    if count >= MIN_THEMATIC_BREAK_MARKERS && Self::is_thematic_marker(marker) {
+                        self.found_thematic_break = true;
+                        self.prefix_buffer.clear();
+                    }
+                    self.prefix_state = PrefixState::Done;
+                } else if count == 1
+                    && (marker == '-' || marker == '*' || marker == '+')
+                    && self.prefix_buffer.ends_with(|ch: char| ch.is_whitespace())
+                {
+                    self.inherit_indented_parents();
+                    self.line_containers
+                        .push(Container::List { ordered: false });
+                    self.explicit_list_marker = true;
+                    self.prefix_buffer.clear();
+                    self.current_indent = 0;
+
+                    if c == '[' {
+                        self.prefix_buffer.push(c);
+                        self.prefix_state = PrefixState::CheckingTaskBox {
+                            step: TaskBox::Marker,
+                            status: TaskStatus::None,
+                        };
+                        return PrefixStep::Consumed;
+                    }
+
+                    self.prefix_state = PrefixState::Done;
+                } else {
+                    self.prefix_state = PrefixState::Done;
+                },
+            PrefixState::ReadDigits => {
+                if c.is_ascii_digit() {
+                    self.prefix_buffer.push(c);
+                    return PrefixStep::Consumed;
+                } else if c == '.' || c == ')' {
+                    self.prefix_buffer.push(c);
+                    self.prefix_state = PrefixState::CheckDot;
+                    return PrefixStep::Consumed;
+                }
+                self.prefix_state = PrefixState::Done;
+            }
+            PrefixState::CheckDot => {
+                if c == ' ' || c == '\t' {
+                    self.inherit_indented_parents();
+                    self.line_containers.push(Container::List { ordered: true });
+                    self.explicit_list_marker = true;
+
+                    self.current_list_start = self
+                        .prefix_buffer
+                        .trim_end_matches(['.', ')'])
+                        .parse()
+                        .unwrap_or(1);
+                    self.prefix_buffer.clear();
+                    self.current_indent = 0;
+                    self.prefix_state = PrefixState::CheckingTaskBox {
+                        step: TaskBox::Bracket,
+                        status: TaskStatus::None,
+                    };
+                    return PrefixStep::Consumed;
+                }
+                self.prefix_state = PrefixState::Done;
+            }
+            PrefixState::CheckingTaskBox { step, status } => match step {
+                TaskBox::Bracket => {
+                    if c == '[' {
+                        self.prefix_buffer.push(c);
+                        self.prefix_state = PrefixState::CheckingTaskBox {
+                            step: TaskBox::Marker,
+                            status,
+                        };
+                        return PrefixStep::Consumed;
+                    }
+                    self.prefix_state = PrefixState::Done;
+                }
+                TaskBox::Marker => {
+                    if c == ' ' {
+                        self.prefix_buffer.push(c);
+                        self.prefix_state = PrefixState::CheckingTaskBox {
+                            step: TaskBox::Close,
+                            status: TaskStatus::Todo,
+                        };
+                        return PrefixStep::Consumed;
+                    } else if c == 'x' || c == 'X' {
+                        self.prefix_buffer.push(c);
+                        self.prefix_state = PrefixState::CheckingTaskBox {
+                            step: TaskBox::Close,
+                            status: TaskStatus::Done,
+                        };
+                        return PrefixStep::Consumed;
+                    }
+                    self.prefix_state = PrefixState::Done;
+                }
+                TaskBox::Close => {
+                    if c == ']' {
+                        self.prefix_buffer.push(c);
+                        self.prefix_state = PrefixState::CheckingTaskBox {
+                            step: TaskBox::Space,
+                            status,
+                        };
+                        return PrefixStep::Consumed;
+                    }
+                    self.prefix_state = PrefixState::Done;
+                }
+                TaskBox::Space => {
+                    if c == ' ' || c == '\t' {
+                        self.current_task_status = status;
+                        self.prefix_buffer.clear();
+                        self.prefix_state = PrefixState::Scan;
+                        return PrefixStep::Consumed;
+                    }
+                    self.prefix_state = PrefixState::Done;
+                }
+            },
+            PrefixState::Done => {}
+        }
+
+        PrefixStep::Finished
+    }
+
     pub fn push_chunk(&mut self, chunk: &str) -> ChunkResult {
         let mut actions = Vec::new();
 
@@ -694,222 +920,8 @@ impl LlmMarkdownParser {
             if self.prefix_state == PrefixState::Done || self.inline_only {
                 process_as_text = !self.found_thematic_break;
             } else {
-                match self.prefix_state {
-                    PrefixState::StrictScan {
-                        quotes_stripped,
-                        space_allowed,
-                        indent_stripped,
-                    } => {
-                        let expected = u8::try_from(
-                            self.open_containers
-                                .iter()
-                                .filter(|&&con| con == Container::Blockquote)
-                                .count(),
-                        )
-                        .unwrap_or(u8::MAX);
-
-                        if c == '>' && quotes_stripped < expected {
-                            self.prefix_state = PrefixState::StrictScan {
-                                quotes_stripped: quotes_stripped.saturating_add(1),
-                                space_allowed: true,
-                                indent_stripped,
-                            };
-                            continue;
-                        } else if (c == ' ' || c == '\t') && space_allowed {
-                            self.prefix_state = PrefixState::StrictScan {
-                                quotes_stripped,
-                                space_allowed: false,
-                                indent_stripped,
-                            };
-                            continue;
-                        } else if (c == ' ' || c == '\t') && quotes_stripped < expected {
-                            continue;
-                        } else if (c == ' ' || c == '\t') && indent_stripped < self.list_indent() {
-                            let width = if c == '\t' { 4 } else { 1 };
-                            self.prefix_state = PrefixState::StrictScan {
-                                quotes_stripped,
-                                space_allowed,
-                                indent_stripped: indent_stripped.saturating_add(width),
-                            };
-                            continue;
-                        }
-                        self.prefix_state = PrefixState::Done;
-                    }
-                    PrefixState::Scan => {
-                        if c == ' ' {
-                            self.current_indent = self.current_indent.saturating_add(1);
-                            continue;
-                        } else if c == '\t' {
-                            self.current_indent = self.current_indent.saturating_add(TAB_WIDTH);
-                            continue;
-                        } else if c == '>' {
-                            self.inherit_indented_parents();
-                            self.line_containers.push(Container::Blockquote);
-                            self.current_indent = 0;
-                            continue;
-                        } else if c == '*' || c == '_' {
-                            self.prefix_buffer.push(c);
-                            self.prefix_state = PrefixState::CheckingThematicBreak {
-                                marker: c,
-                                count: 1,
-                            };
-                            continue;
-                        } else if c == '-' || c == '+' {
-                            self.prefix_buffer.push(c);
-                            self.prefix_state = PrefixState::CheckDash;
-                            continue;
-                        } else if c.is_ascii_digit() {
-                            self.prefix_buffer.push(c);
-                            self.prefix_state = PrefixState::ReadDigits;
-                            continue;
-                        }
-                        self.prefix_state = PrefixState::Done;
-                    }
-                    PrefixState::CheckDash => {
-                        if c == ' ' || c == '\t' {
-                            self.prefix_buffer.push(c);
-                            self.prefix_state = PrefixState::CheckingThematicBreak {
-                                marker: self.prefix_buffer.chars().next().unwrap_or('-'),
-                                count: 1,
-                            };
-                            continue;
-                        } else if c == self.prefix_buffer.chars().next().unwrap_or('-') {
-                            self.prefix_buffer.push(c);
-                            self.prefix_state = PrefixState::CheckingThematicBreak {
-                                marker: c,
-                                count: 2,
-                            };
-                            continue;
-                        }
-                        self.prefix_state = PrefixState::Done;
-                    }
-                    PrefixState::CheckingThematicBreak { marker, count } =>
-                        if c == marker {
-                            self.prefix_buffer.push(c);
-                            self.prefix_state = PrefixState::CheckingThematicBreak {
-                                marker,
-                                count: count.saturating_add(1),
-                            };
-                            continue;
-                        } else if c == ' ' || c == '\t' {
-                            self.prefix_buffer.push(c);
-                            continue;
-                        } else if c == '\n' {
-                            if count >= MIN_THEMATIC_BREAK_MARKERS
-                                && Self::is_thematic_marker(marker)
-                            {
-                                self.found_thematic_break = true;
-                                self.prefix_buffer.clear();
-                            }
-                            self.prefix_state = PrefixState::Done;
-                        } else if count == 1
-                            && (marker == '-' || marker == '*' || marker == '+')
-                            && self.prefix_buffer.ends_with(|ch: char| ch.is_whitespace())
-                        {
-                            self.inherit_indented_parents();
-                            self.line_containers
-                                .push(Container::List { ordered: false });
-                            self.explicit_list_marker = true;
-                            self.prefix_buffer.clear();
-                            self.current_indent = 0;
-
-                            if c == '[' {
-                                self.prefix_buffer.push(c);
-                                self.prefix_state = PrefixState::CheckingTaskBox {
-                                    step: TaskBox::Marker,
-                                    status: TaskStatus::None,
-                                };
-                                continue;
-                            }
-
-                            self.prefix_state = PrefixState::Done;
-                        } else {
-                            self.prefix_state = PrefixState::Done;
-                        },
-                    PrefixState::ReadDigits => {
-                        if c.is_ascii_digit() {
-                            self.prefix_buffer.push(c);
-                            continue;
-                        } else if c == '.' || c == ')' {
-                            self.prefix_buffer.push(c);
-                            self.prefix_state = PrefixState::CheckDot;
-                            continue;
-                        }
-                        self.prefix_state = PrefixState::Done;
-                    }
-                    PrefixState::CheckDot => {
-                        if c == ' ' || c == '\t' {
-                            self.inherit_indented_parents();
-                            self.line_containers.push(Container::List { ordered: true });
-                            self.explicit_list_marker = true;
-
-                            self.current_list_start = self
-                                .prefix_buffer
-                                .trim_end_matches(['.', ')'])
-                                .parse()
-                                .unwrap_or(1);
-                            self.prefix_buffer.clear();
-                            self.current_indent = 0;
-                            self.prefix_state = PrefixState::CheckingTaskBox {
-                                step: TaskBox::Bracket,
-                                status: TaskStatus::None,
-                            };
-                            continue;
-                        }
-                        self.prefix_state = PrefixState::Done;
-                    }
-                    PrefixState::CheckingTaskBox { step, status } => match step {
-                        TaskBox::Bracket => {
-                            if c == '[' {
-                                self.prefix_buffer.push(c);
-                                self.prefix_state = PrefixState::CheckingTaskBox {
-                                    step: TaskBox::Marker,
-                                    status,
-                                };
-                                continue;
-                            }
-                            self.prefix_state = PrefixState::Done;
-                        }
-                        TaskBox::Marker => {
-                            if c == ' ' {
-                                self.prefix_buffer.push(c);
-                                self.prefix_state = PrefixState::CheckingTaskBox {
-                                    step: TaskBox::Close,
-                                    status: TaskStatus::Todo,
-                                };
-                                continue;
-                            } else if c == 'x' || c == 'X' {
-                                self.prefix_buffer.push(c);
-                                self.prefix_state = PrefixState::CheckingTaskBox {
-                                    step: TaskBox::Close,
-                                    status: TaskStatus::Done,
-                                };
-                                continue;
-                            }
-                            self.prefix_state = PrefixState::Done;
-                        }
-                        TaskBox::Close => {
-                            if c == ']' {
-                                self.prefix_buffer.push(c);
-                                self.prefix_state = PrefixState::CheckingTaskBox {
-                                    step: TaskBox::Space,
-                                    status,
-                                };
-                                continue;
-                            }
-                            self.prefix_state = PrefixState::Done;
-                        }
-                        TaskBox::Space => {
-                            if c == ' ' || c == '\t' {
-                                self.current_task_status = status;
-                                self.prefix_buffer.clear();
-                                self.prefix_state = PrefixState::Scan;
-                                continue;
-                            }
-                            self.prefix_state = PrefixState::Done;
-                        }
-                    },
-                    PrefixState::Done => unreachable!(),
+                if self.scan_prefix(c) == PrefixStep::Consumed {
+                    continue;
                 }
 
                 if self.prefix_state == PrefixState::Done {
