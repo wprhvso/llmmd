@@ -91,6 +91,80 @@ impl ActiveEntity {
 }
 
 #[derive(Debug, Default)]
+struct ListStack(Vec<Option<u64>>);
+
+impl ListStack {
+    fn start(&mut self, ordered: bool, first: u64) {
+        self.0.push(ordered.then_some(first));
+    }
+
+    fn end(&mut self) {
+        self.0.pop();
+    }
+
+    fn depth(&self) -> usize {
+        self.0.len().saturating_sub(1)
+    }
+
+    fn item_prefix(&mut self, task_status: TaskStatus) -> String {
+        let mut prefix = LIST_INDENT.repeat(self.depth());
+
+        if matches!(self.0.last(), Some(Some(_))) {
+            prefix.push_str(&self.next_number());
+            prefix.push(' ');
+            match task_status {
+                TaskStatus::None => {}
+                TaskStatus::Todo => prefix.push_str(CHECKBOX_TODO),
+                TaskStatus::Done => prefix.push_str(CHECKBOX_DONE),
+            }
+        } else if !self.0.is_empty() {
+            match task_status {
+                TaskStatus::None => {
+                    prefix.push_str(self.bullet());
+                    prefix.push(' ');
+                }
+                TaskStatus::Todo => prefix.push_str(CHECKBOX_TODO),
+                TaskStatus::Done => prefix.push_str(CHECKBOX_DONE),
+            }
+        }
+
+        prefix
+    }
+
+    fn bullet(&self) -> &'static str {
+        match self.depth() % 3 {
+            0 => BULLET_TOP,
+            1 => BULLET_NESTED,
+            _ => BULLET_DEEP,
+        }
+    }
+
+    fn next_number(&mut self) -> String {
+        let last = self.0.len().saturating_sub(1);
+        let mut number = String::new();
+        for (level, counter) in self.0.iter().enumerate() {
+            let Some(counter) = counter else { continue };
+            if !number.is_empty() {
+                number.push('.');
+            }
+            let shown = if level == last {
+                *counter
+            } else {
+                counter.saturating_sub(1)
+            };
+            number.push_str(&shown.to_string());
+        }
+        number.push('.');
+
+        if let Some(Some(counter)) = self.0.last_mut() {
+            *counter = counter.saturating_add(1);
+        }
+
+        number
+    }
+}
+
+#[derive(Debug, Default)]
 struct TableRenderer {
     headers: Vec<String>,
     rows: Vec<Vec<String>>,
@@ -502,7 +576,7 @@ impl TelegramEntityBuilder {
             current_utf16_offset: 0,
         };
 
-        let mut list_stack: Vec<Option<u64>> = Vec::new();
+        let mut lists = ListStack::default();
         let mut table: Option<TableRenderer> = None;
 
         let mut scripts = ScriptStack::default();
@@ -614,62 +688,11 @@ impl TelegramEntityBuilder {
                     state.close_entity(EntityKind::Bold);
                 }
 
-                Event::ListStart { ordered, start } => {
-                    list_stack.push(ordered.then_some(*start));
-                }
+                Event::ListStart { ordered, start } => lists.start(*ordered, *start),
                 Event::ListItemStart { task_status } => {
-                    let depth = list_stack.len().saturating_sub(1);
-                    let indent = LIST_INDENT.repeat(depth);
-                    state.push_text(&indent);
-
-                    let is_ordered = matches!(list_stack.last(), Some(Some(_)));
-
-                    if is_ordered {
-                        let mut num_str = String::new();
-                        let len = list_stack.len();
-                        for (j, level) in list_stack.iter().enumerate() {
-                            if let Some(number) = level {
-                                if !num_str.is_empty() {
-                                    num_str.push('.');
-                                }
-
-                                let shown = if j == len.saturating_sub(1) {
-                                    *number
-                                } else {
-                                    number.saturating_sub(1)
-                                };
-                                num_str.push_str(&shown.to_string());
-                            }
-                        }
-                        num_str.push('.');
-
-                        if let Some(Some(last)) = list_stack.last_mut() {
-                            *last = last.saturating_add(1);
-                        }
-
-                        match task_status {
-                            TaskStatus::None => state.push_text(&format!("{num_str} ")),
-                            TaskStatus::Todo =>
-                                state.push_text(&format!("{num_str} {CHECKBOX_TODO}")),
-                            TaskStatus::Done =>
-                                state.push_text(&format!("{num_str} {CHECKBOX_DONE}")),
-                        }
-                    } else if !list_stack.is_empty() {
-                        let bullet = match depth % 3 {
-                            0 => BULLET_TOP,
-                            1 => BULLET_NESTED,
-                            _ => BULLET_DEEP,
-                        };
-                        match task_status {
-                            TaskStatus::None => state.push_text(&format!("{bullet} ")),
-                            TaskStatus::Todo => state.push_text(CHECKBOX_TODO),
-                            TaskStatus::Done => state.push_text(CHECKBOX_DONE),
-                        }
-                    }
+                    state.push_text(&lists.item_prefix(*task_status));
                 }
-                Event::ListEnd => {
-                    list_stack.pop();
-                }
+                Event::ListEnd => lists.end(),
 
                 Event::ThematicBreak => state.push_text(THEMATIC_BREAK),
 
