@@ -1097,7 +1097,21 @@ impl LlmMarkdownParser {
     pub fn end(&mut self) -> ChunkResult {
         let mut actions = Vec::new();
 
-        if matches!(
+        self.finish_pending_inline(&mut actions);
+        self.finish_thematic_break(&mut actions);
+        self.finish_fence_info(&mut actions);
+        self.restore_partial_fence();
+        self.flush_text(&mut actions);
+        self.finish_table(&mut actions);
+        self.close_open_block(&mut actions);
+        self.close_containers_from(0, &mut actions);
+        self.rewind();
+
+        ChunkResult { actions }
+    }
+
+    fn finish_pending_inline(&mut self, out: &mut Vec<Action>) {
+        let dangling = matches!(
             self.state,
             State::CheckingStar { .. }
                 | State::CheckingTilde { .. }
@@ -1114,34 +1128,46 @@ impl LlmMarkdownParser {
             self.state,
             State::CheckingBackticks { count, is_line_start }
                 if !(is_line_start && count >= MIN_FENCE_BACKTICKS)
-        ) {
-            self.push_char('\n', &mut actions);
+        );
+
+        if dangling {
+            self.push_char('\n', out);
             if self.buffer.ends_with('\n') {
                 let _ = self.buffer.pop();
             }
         }
+    }
 
-        if let PrefixState::CheckingThematicBreak { marker, count } = self.prefix_state
-            && count >= MIN_THEMATIC_BREAK_MARKERS
-            && Self::is_thematic_marker(marker)
-        {
-            self.found_thematic_break = true;
-            self.prefix_buffer.clear();
-            self.prefix_state = PrefixState::Done;
-
-            let common = self.open_containers.len().saturating_sub(1);
-            self.flush_text(&mut actions);
-            self.close_containers_from(common, &mut actions);
-            self.push_event(Event::ThematicBreak, &mut actions);
+    fn finish_thematic_break(&mut self, out: &mut Vec<Action>) {
+        let PrefixState::CheckingThematicBreak { marker, count } = self.prefix_state else {
+            return;
+        };
+        if count < MIN_THEMATIC_BREAK_MARKERS || !Self::is_thematic_marker(marker) {
+            return;
         }
 
-        if matches!(self.state, State::ReadingCodeInfo { .. }) {
-            let language = std::mem::take(&mut self.buffer).trim().to_string();
-            self.push_event(Event::CodeBlockStart(language), &mut actions);
-            self.push_event(Event::CodeBlockEnd, &mut actions);
-            self.state = State::NormalText;
+        self.found_thematic_break = true;
+        self.prefix_buffer.clear();
+        self.prefix_state = PrefixState::Done;
+
+        let common = self.open_containers.len().saturating_sub(1);
+        self.flush_text(out);
+        self.close_containers_from(common, out);
+        self.push_event(Event::ThematicBreak, out);
+    }
+
+    fn finish_fence_info(&mut self, out: &mut Vec<Action>) {
+        if !matches!(self.state, State::ReadingCodeInfo { .. }) {
+            return;
         }
 
+        let language = std::mem::take(&mut self.buffer).trim().to_string();
+        self.push_event(Event::CodeBlockStart(language), out);
+        self.push_event(Event::CodeBlockEnd, out);
+        self.state = State::NormalText;
+    }
+
+    fn restore_partial_fence(&mut self) {
         if let State::CheckingBlockEnd {
             opening_count,
             current_count,
@@ -1150,36 +1176,40 @@ impl LlmMarkdownParser {
         {
             self.push_repeated('`', current_count);
         }
+    }
 
-        self.flush_text(&mut actions);
-
-        if self.in_table {
-            if self.state == State::NormalText && Self::is_table_row(&self.current_line_raw) {
-                self.rollback_to(self.current_line_event_index, &mut actions);
-                let row = self.current_line_raw.clone();
-                self.emit_parsed_table_row(&row, false, &mut actions);
-            }
-            self.in_table = false;
-            self.push_event(Event::TableEnd, &mut actions);
+    fn finish_table(&mut self, out: &mut Vec<Action>) {
+        if !self.in_table {
+            return;
         }
 
+        if self.state == State::NormalText && Self::is_table_row(&self.current_line_raw) {
+            self.rollback_to(self.current_line_event_index, out);
+            let row = self.current_line_raw.clone();
+            self.emit_parsed_table_row(&row, false, out);
+        }
+        self.in_table = false;
+        self.push_event(Event::TableEnd, out);
+    }
+
+    fn close_open_block(&mut self, out: &mut Vec<Action>) {
         match self.state {
             State::CheckingBackticks {
                 count,
                 is_line_start,
             } if is_line_start && count >= MIN_FENCE_BACKTICKS => {
-                self.push_event(Event::CodeBlockStart(String::new()), &mut actions);
-                self.push_event(Event::CodeBlockEnd, &mut actions);
+                self.push_event(Event::CodeBlockStart(String::new()), out);
+                self.push_event(Event::CodeBlockEnd, out);
             }
             State::InsideCodeBlock { .. } | State::CheckingBlockEnd { .. } => {
-                self.push_event(Event::CodeBlockEnd, &mut actions);
+                self.push_event(Event::CodeBlockEnd, out);
             }
             State::InsideDisplayMathDollar | State::CheckingDisplayMathDollarEnd => {
                 self.push_event(
                     Event::DisplayMathEnd {
                         delimiter: "$$".to_string(),
                     },
-                    &mut actions,
+                    out,
                 );
             }
             State::InsideDisplayMathBracket | State::CheckingDisplayMathBracketEnd => {
@@ -1187,19 +1217,14 @@ impl LlmMarkdownParser {
                     Event::DisplayMathEnd {
                         delimiter: "\\]".to_string(),
                     },
-                    &mut actions,
+                    out,
                 );
             }
             State::InsideHeading => {
-                self.push_event(Event::HeadingEnd, &mut actions);
+                self.push_event(Event::HeadingEnd, out);
             }
             _ => {}
         }
-
-        self.close_containers_from(0, &mut actions);
-        self.rewind();
-
-        ChunkResult { actions }
     }
 
     fn rewind(&mut self) {
