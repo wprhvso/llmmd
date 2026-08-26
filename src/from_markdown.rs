@@ -1239,9 +1239,30 @@ impl LlmMarkdownParser {
             }
         }
         self.open_containers.clear();
-        self.state = State::NormalText;
+        self.rewind();
 
         ChunkResult { actions }
+    }
+
+    fn rewind(&mut self) {
+        self.state = State::NormalText;
+        self.prefix_state = PrefixState::Scan;
+        self.prefix_buffer.clear();
+        self.line_containers.clear();
+        self.speculations.clear();
+        self.buffer.clear();
+        self.current_line_raw.clear();
+        self.last_line_raw.clear();
+        self.at_line_start = true;
+        self.last_char = '\n';
+        self.current_indent = 0;
+        self.explicit_list_marker = false;
+        self.found_thematic_break = false;
+        self.current_task_status = TaskStatus::None;
+        self.current_list_start = 1;
+        self.in_table = false;
+        self.skip_math_newline = false;
+        self.pending_carriage_return = false;
     }
 
     fn push_char(&mut self, c: char, out: &mut Vec<Action>) {

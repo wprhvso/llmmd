@@ -1,6 +1,6 @@
 use _native::{from_markdown::Event, to_telegram::EntityKind};
 
-use crate::support::{assert_entities_valid, assert_well_formed, events, render, text};
+use crate::support::{assert_entities_valid, assert_well_formed, events, render, resolve, text};
 
 #[test]
 fn nested_markup_is_not_duplicated_by_the_inner_reparse() {
@@ -356,4 +356,26 @@ fn a_link_without_a_label_shows_its_url_inside_a_table() {
 fn a_link_inside_a_table_keeps_its_label() {
     let text = render("| a |\n|---|\n| [label](https://e.com/x) |\n").0;
     assert!(text.contains("label"), "the label disappeared: {text:?}");
+}
+
+#[test]
+fn a_parser_can_be_reused_after_it_ends() {
+    let mut parser = _native::from_markdown::LlmMarkdownParser::new();
+    parser.push_chunk("a\n\n---\n\n");
+    parser.end();
+
+    let mut second = parser.push_chunk("tail text\n").actions;
+    second.extend(parser.end().actions);
+
+    let text: String = resolve(second)
+        .iter()
+        .filter_map(|event| match event {
+            Event::Text(value) => Some(value.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        text.contains("tail text"),
+        "the reused parser swallowed {text:?}"
+    );
 }
