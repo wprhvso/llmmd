@@ -91,13 +91,98 @@ impl ActiveEntity {
 }
 
 #[derive(Debug, Default)]
-struct TableState {
-    active: bool,
+struct TableRenderer {
     headers: Vec<String>,
     rows: Vec<Vec<String>>,
     current_row: Vec<String>,
     current_cell: String,
     is_header_row: bool,
+    scripts: ScriptStack,
+}
+
+#[derive(Debug)]
+enum TableStep {
+    Continue,
+    Finished { rendered: String, trailing: String },
+}
+
+impl TableRenderer {
+    fn event(&mut self, events: &[Event], index: usize, event: &Event) -> TableStep {
+        match event {
+            Event::TableEnd => return self.finish(),
+            Event::TableRowStart => {
+                self.current_row.clear();
+                self.is_header_row = false;
+            }
+            Event::TableRowEnd => {
+                let row = std::mem::take(&mut self.current_row);
+                if self.is_header_row {
+                    self.headers = row;
+                } else if !row.is_empty() {
+                    self.rows.push(row);
+                }
+            }
+            Event::TableCellStart { is_header } => {
+                self.current_cell.clear();
+                if *is_header {
+                    self.is_header_row = true;
+                }
+            }
+            Event::TableCellEnd => {
+                let cell = std::mem::take(&mut self.current_cell);
+                self.current_row.push(cell.trim().to_string());
+            }
+            Event::SuperscriptStart | Event::SubscriptStart => {
+                let script = script_of(event);
+                if let Some(tag) = self.scripts.open(events, index.saturating_add(1), script) {
+                    self.current_cell.push_str(tag);
+                }
+            }
+            Event::SuperscriptEnd | Event::SubscriptEnd => {
+                if let Some(tag) = self.scripts.close(script_of(event)) {
+                    self.current_cell.push_str(tag);
+                }
+            }
+            Event::ImageStart { url } | Event::LinkStart { url } => {
+                if label_is_empty(events, index.saturating_add(1)) {
+                    self.current_cell.push_str(url);
+                }
+            }
+            Event::Text(value)
+            | Event::InlineCode(value)
+            | Event::InlineMath { content: value, .. } => {
+                let shaped = self.scripts.apply(value);
+                self.current_cell.push_str(&shaped);
+            }
+            _ => {}
+        }
+        TableStep::Continue
+    }
+
+    fn finish(&mut self) -> TableStep {
+        let mut table = Table::new();
+        table.load_preset(UTF8_FULL);
+
+        if !self.headers.is_empty() {
+            table.set_header(&self.headers);
+        }
+        for row in &self.rows {
+            table.add_row(row);
+        }
+
+        TableStep::Finished {
+            rendered: table.to_string(),
+            trailing: std::mem::take(&mut self.current_cell),
+        }
+    }
+}
+
+fn script_of(event: &Event) -> Script {
+    if matches!(event, Event::SuperscriptStart | Event::SuperscriptEnd) {
+        Script::Super
+    } else {
+        Script::Sub
+    }
 }
 
 #[derive(Debug)]
@@ -369,6 +454,27 @@ impl Default for TelegramEntityBuilder {
     }
 }
 
+fn push_rendered_table(state: &mut BuildState, rendered: &str, trailing: &str) {
+    if !rendered.is_empty() {
+        if !state.text.is_empty() && !state.text.ends_with('\n') {
+            state.push_text("\n");
+        }
+        for (index, line) in rendered.lines().enumerate() {
+            if index > 0 {
+                state.push_text("\n");
+            }
+            state.open_entity(EntityKind::Code, None, None);
+            state.push_text(line);
+            state.close_entity(EntityKind::Code);
+        }
+        state.push_text("\n");
+    }
+
+    if !trailing.is_empty() {
+        state.push_text(trailing);
+    }
+}
+
 impl TelegramEntityBuilder {
     #[must_use]
     pub const fn new() -> Self {
@@ -397,7 +503,7 @@ impl TelegramEntityBuilder {
         };
 
         let mut list_stack: Vec<Option<u64>> = Vec::new();
-        let mut table_state = TableState::default();
+        let mut table: Option<TableRenderer> = None;
 
         let mut scripts = ScriptStack::default();
 
@@ -405,106 +511,19 @@ impl TelegramEntityBuilder {
         let mut quote_depth = 0_usize;
 
         for (i, event) in self.resolved_events.iter().enumerate() {
-            if table_state.active {
-                match event {
-                    Event::TableEnd => {
-                        let mut table = Table::new();
-                        table.load_preset(UTF8_FULL);
-
-                        if !table_state.headers.is_empty() {
-                            table.set_header(&table_state.headers);
-                        }
-                        for row in &table_state.rows {
-                            table.add_row(row);
-                        }
-
-                        let rendered = table.to_string();
-                        if !rendered.is_empty() {
-                            if !state.text.is_empty() && !state.text.ends_with('\n') {
-                                state.push_text("\n");
-                            }
-                            for (j, line) in rendered.lines().enumerate() {
-                                if j > 0 {
-                                    state.push_text("\n");
-                                }
-                                state.open_entity(EntityKind::Code, None, None);
-                                state.push_text(line);
-                                state.close_entity(EntityKind::Code);
-                            }
-                            state.push_text("\n");
-                        }
-
-                        let trailing = std::mem::take(&mut table_state.current_cell);
-                        if !trailing.is_empty() {
-                            state.push_text(&trailing);
-                        }
-                        table_state = TableState::default();
-                    }
-                    Event::TableRowStart => {
-                        table_state.current_row.clear();
-                        table_state.is_header_row = false;
-                    }
-                    Event::TableRowEnd => {
-                        let row = std::mem::take(&mut table_state.current_row);
-                        if table_state.is_header_row {
-                            table_state.headers = row;
-                        } else if !row.is_empty() {
-                            table_state.rows.push(row);
-                        }
-                    }
-                    Event::TableCellStart { is_header } => {
-                        table_state.current_cell.clear();
-                        if *is_header {
-                            table_state.is_header_row = true;
-                        }
-                    }
-                    Event::TableCellEnd => {
-                        let cell_text = std::mem::take(&mut table_state.current_cell);
-                        table_state.current_row.push(cell_text.trim().to_string());
-                    }
-                    Event::SuperscriptStart | Event::SubscriptStart => {
-                        let script = if matches!(event, Event::SuperscriptStart) {
-                            Script::Super
-                        } else {
-                            Script::Sub
-                        };
-                        if let Some(tag) =
-                            scripts.open(&self.resolved_events, i.saturating_add(1), script)
-                        {
-                            table_state.current_cell.push_str(tag);
-                        }
-                    }
-                    Event::SuperscriptEnd | Event::SubscriptEnd => {
-                        let script = if matches!(event, Event::SuperscriptEnd) {
-                            Script::Super
-                        } else {
-                            Script::Sub
-                        };
-                        if let Some(tag) = scripts.close(script) {
-                            table_state.current_cell.push_str(tag);
-                        }
-                    }
-                    Event::ImageStart { url } | Event::LinkStart { url } => {
-                        if label_is_empty(&self.resolved_events, i.saturating_add(1)) {
-                            table_state.current_cell.push_str(url);
-                        }
-                    }
-                    Event::Text(string_value)
-                    | Event::InlineCode(string_value)
-                    | Event::InlineMath {
-                        content: string_value,
-                        ..
-                    } => table_state
-                        .current_cell
-                        .push_str(&scripts.apply(string_value)),
-                    _ => {}
+            if let Some(renderer) = table.as_mut() {
+                if let TableStep::Finished { rendered, trailing } =
+                    renderer.event(&self.resolved_events, i, event)
+                {
+                    push_rendered_table(&mut state, &rendered, &trailing);
+                    table = None;
                 }
                 continue;
             }
 
             match event {
                 Event::TableStart => {
-                    table_state.active = true;
+                    table = Some(TableRenderer::default());
                 }
                 Event::SuperscriptStart | Event::SubscriptStart => {
                     let script = if matches!(event, Event::SuperscriptStart) {
