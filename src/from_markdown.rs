@@ -60,7 +60,7 @@ pub struct ChunkResult {
     pub actions: Vec<Action>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
     NormalText,
     CheckingBackticks {
@@ -104,9 +104,7 @@ enum State {
         count: u8,
         char_before: char,
     },
-    CheckingHtmlTag {
-        tag: String,
-    },
+    ReadingHtmlTag,
     CheckingBang,
     CheckingLinkUrl {
         kind: SpeculationKind,
@@ -115,7 +113,6 @@ enum State {
     ReadingLinkUrl {
         kind: SpeculationKind,
         spec_idx: usize,
-        url: String,
     },
 }
 
@@ -238,6 +235,8 @@ pub struct LlmMarkdownParser {
     in_table: bool,
     skip_math_newline: bool,
     pending_carriage_return: bool,
+    html_tag: String,
+    link_url: String,
     block_floor: usize,
     depth: u16,
     reparse_budget: usize,
@@ -276,6 +275,8 @@ impl LlmMarkdownParser {
             in_table: false,
             skip_math_newline: false,
             pending_carriage_return: false,
+            html_tag: String::new(),
+            link_url: String::new(),
             block_floor: 0,
             depth: INLINE_RECURSION_LIMIT,
             reparse_budget: 0,
@@ -1109,7 +1110,7 @@ impl LlmMarkdownParser {
                 | State::VerifyInlineMathDollarEnd
                 | State::CheckingSlash
                 | State::CheckingBang
-                | State::CheckingHtmlTag { .. }
+                | State::ReadingHtmlTag
                 | State::CheckingLinkUrl { .. }
                 | State::ReadingLinkUrl { .. }
                 | State::CheckingHeading { .. }
@@ -1225,6 +1226,8 @@ impl LlmMarkdownParser {
         self.in_table = false;
         self.skip_math_newline = false;
         self.pending_carriage_return = false;
+        self.html_tag.clear();
+        self.link_url.clear();
     }
 
     fn push_char(&mut self, c: char, out: &mut Vec<Action>) {
@@ -1232,7 +1235,7 @@ impl LlmMarkdownParser {
 
         while reprocess {
             reprocess = false;
-            let current_state = self.state.clone();
+            let current_state = self.state;
 
             match current_state {
                 State::NormalText =>
@@ -1277,9 +1280,9 @@ impl LlmMarkdownParser {
                         };
                     } else if c == '<' {
                         self.flush_text(out);
-                        self.state = State::CheckingHtmlTag {
-                            tag: String::from("<"),
-                        };
+                        self.html_tag.clear();
+                        self.html_tag.push('<');
+                        self.state = State::ReadingHtmlTag;
                     } else if c == '!' {
                         self.flush_text(out);
                         self.state = State::CheckingBang;
@@ -1325,24 +1328,18 @@ impl LlmMarkdownParser {
                     if c == '(' {
                         self.buffer.push('(');
                         self.flush_text(out);
-                        self.state = State::ReadingLinkUrl {
-                            kind,
-                            spec_idx,
-                            url: String::new(),
-                        };
+                        self.link_url.clear();
+                        self.state = State::ReadingLinkUrl { kind, spec_idx };
                     } else {
                         self.abort_speculation(spec_idx);
                         self.state = State::NormalText;
                         reprocess = true;
                     },
 
-                State::ReadingLinkUrl {
-                    kind,
-                    spec_idx,
-                    mut url,
-                } =>
+                State::ReadingLinkUrl { kind, spec_idx } =>
                     if c == ')' {
                         self.buffer.push(')');
+                        let url = std::mem::take(&mut self.link_url);
                         self.resolve_link(spec_idx, &url, kind, out);
                         self.state = State::NormalText;
                     } else if c.is_whitespace() {
@@ -1350,18 +1347,14 @@ impl LlmMarkdownParser {
                         self.state = State::NormalText;
                         reprocess = true;
                     } else {
-                        url.push(c);
+                        self.link_url.push(c);
                         self.buffer.push(c);
                         self.flush_text(out);
-                        self.state = State::ReadingLinkUrl {
-                            kind,
-                            spec_idx,
-                            url,
-                        };
                     },
 
-                State::CheckingHtmlTag { mut tag } => {
-                    if c != '>' && (c.is_whitespace() || tag.len() >= MAX_HTML_TAG_LEN) {
+                State::ReadingHtmlTag => {
+                    if c != '>' && (c.is_whitespace() || self.html_tag.len() >= MAX_HTML_TAG_LEN) {
+                        let tag = std::mem::take(&mut self.html_tag);
                         self.buffer.push_str(&tag);
                         self.flush_text(out);
                         self.state = State::NormalText;
@@ -1369,8 +1362,9 @@ impl LlmMarkdownParser {
                         continue;
                     }
 
-                    tag.push(c);
+                    self.html_tag.push(c);
                     if c == '>' {
+                        let tag = std::mem::take(&mut self.html_tag);
                         if tag == "<u>" {
                             self.start_speculation(SpeculationKind::Underline);
                             self.buffer.push_str(&tag);
@@ -1417,8 +1411,6 @@ impl LlmMarkdownParser {
                             self.flush_text(out);
                         }
                         self.state = State::NormalText;
-                    } else {
-                        self.state = State::CheckingHtmlTag { tag };
                     }
                 }
 
