@@ -125,6 +125,14 @@ pub enum Container {
     List { ordered: bool },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskBox {
+    Bracket,
+    Marker,
+    Close,
+    Space,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum PrefixState {
     Scan,
@@ -141,7 +149,7 @@ enum PrefixState {
         count: u8,
     },
     CheckingTaskBox {
-        step: u8,
+        step: TaskBox,
         status: TaskStatus,
     },
     Done,
@@ -788,7 +796,7 @@ impl LlmMarkdownParser {
                             if c == '[' {
                                 self.prefix_buffer.push(c);
                                 self.prefix_state = PrefixState::CheckingTaskBox {
-                                    step: 1,
+                                    step: TaskBox::Marker,
                                     status: TaskStatus::None,
                                 };
                                 continue;
@@ -823,48 +831,55 @@ impl LlmMarkdownParser {
                             self.prefix_buffer.clear();
                             self.current_indent = 0;
                             self.prefix_state = PrefixState::CheckingTaskBox {
-                                step: 0,
+                                step: TaskBox::Bracket,
                                 status: TaskStatus::None,
                             };
                             continue;
                         }
                         self.prefix_state = PrefixState::Done;
                     }
-                    PrefixState::CheckingTaskBox { step, status } =>
-                        if step == 0 {
+                    PrefixState::CheckingTaskBox { step, status } => match step {
+                        TaskBox::Bracket => {
                             if c == '[' {
                                 self.prefix_buffer.push(c);
-                                self.prefix_state =
-                                    PrefixState::CheckingTaskBox { step: 1, status };
+                                self.prefix_state = PrefixState::CheckingTaskBox {
+                                    step: TaskBox::Marker,
+                                    status,
+                                };
                                 continue;
                             }
                             self.prefix_state = PrefixState::Done;
-                        } else if step == 1 {
+                        }
+                        TaskBox::Marker => {
                             if c == ' ' {
                                 self.prefix_buffer.push(c);
                                 self.prefix_state = PrefixState::CheckingTaskBox {
-                                    step: 2,
+                                    step: TaskBox::Close,
                                     status: TaskStatus::Todo,
                                 };
                                 continue;
                             } else if c == 'x' || c == 'X' {
                                 self.prefix_buffer.push(c);
                                 self.prefix_state = PrefixState::CheckingTaskBox {
-                                    step: 2,
+                                    step: TaskBox::Close,
                                     status: TaskStatus::Done,
                                 };
                                 continue;
                             }
                             self.prefix_state = PrefixState::Done;
-                        } else if step == 2 {
+                        }
+                        TaskBox::Close => {
                             if c == ']' {
                                 self.prefix_buffer.push(c);
-                                self.prefix_state =
-                                    PrefixState::CheckingTaskBox { step: 3, status };
+                                self.prefix_state = PrefixState::CheckingTaskBox {
+                                    step: TaskBox::Space,
+                                    status,
+                                };
                                 continue;
                             }
                             self.prefix_state = PrefixState::Done;
-                        } else if step == 3 {
+                        }
+                        TaskBox::Space => {
                             if c == ' ' || c == '\t' {
                                 self.current_task_status = status;
                                 self.prefix_buffer.clear();
@@ -872,7 +887,8 @@ impl LlmMarkdownParser {
                                 continue;
                             }
                             self.prefix_state = PrefixState::Done;
-                        },
+                        }
+                    },
                     PrefixState::Done => unreachable!(),
                 }
 
