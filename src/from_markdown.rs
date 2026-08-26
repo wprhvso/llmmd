@@ -1262,6 +1262,125 @@ impl LlmMarkdownParser {
         self.link_url.clear();
     }
 
+    fn on_normal_text(&mut self, c: char, out: &mut Vec<Action>) -> bool {
+        if c == '`' {
+            self.flush_text(out);
+            self.state = State::CheckingBackticks {
+                count: 1,
+                is_line_start: self.at_line_start,
+            };
+        } else if c == '#' && !self.inline_only {
+            self.flush_text(out);
+            self.state = State::CheckingHeading {
+                count: 1,
+                is_line_start: self.at_line_start,
+            };
+        } else if c == '$' {
+            self.flush_text(out);
+            self.state = State::CheckingDollar {
+                char_before: self.last_char,
+            };
+        } else if c == '\\' {
+            self.flush_text(out);
+            self.state = State::CheckingSlash;
+        } else if c == '*' || c == '_' {
+            self.flush_text(out);
+            self.state = State::CheckingStar {
+                count: 1,
+                char_before: self.last_char,
+                marker: c,
+            };
+        } else if c == '~' {
+            self.flush_text(out);
+            self.state = State::CheckingTilde {
+                count: 1,
+                char_before: self.last_char,
+            };
+        } else if c == '|' {
+            self.flush_text(out);
+            self.state = State::CheckingPipe {
+                count: 1,
+                char_before: self.last_char,
+            };
+        } else if c == '<' {
+            self.flush_text(out);
+            self.html_tag.clear();
+            self.html_tag.push('<');
+            self.state = State::ReadingHtmlTag;
+        } else if c == '!' {
+            self.flush_text(out);
+            self.state = State::CheckingBang;
+        } else if c == '[' {
+            self.flush_text(out);
+            self.start_speculation(SpeculationKind::LinkLabel);
+            self.buffer.push('[');
+            self.flush_text(out);
+            self.state = State::NormalText;
+        } else if c == ']' {
+            let maybe_spec = self
+                .speculations
+                .iter()
+                .rev()
+                .find(|s| {
+                    s.kind == SpeculationKind::LinkLabel || s.kind == SpeculationKind::ImageLabel
+                })
+                .map(|s| (s.kind, s.start_event_index));
+
+            self.buffer.push(']');
+            if let Some((kind, spec_idx)) = maybe_spec {
+                self.flush_text(out);
+                self.state = State::CheckingLinkUrl { kind, spec_idx };
+            }
+        } else {
+            self.buffer.push(c);
+        }
+
+        false
+    }
+
+    fn on_reading_html_tag(&mut self, c: char, out: &mut Vec<Action>) -> bool {
+        if c != '>' && (c.is_whitespace() || self.html_tag.len() >= MAX_HTML_TAG_LEN) {
+            let tag = std::mem::take(&mut self.html_tag);
+            self.buffer.push_str(&tag);
+            self.flush_text(out);
+            self.state = State::NormalText;
+            return true;
+        }
+
+        self.html_tag.push(c);
+        if c == '>' {
+            let tag = std::mem::take(&mut self.html_tag);
+            if tag == "<u>" {
+                self.start_speculation(SpeculationKind::Underline);
+                self.buffer.push_str(&tag);
+                self.flush_text(out);
+            } else if tag == "</u>" && self.has_speculation(SpeculationKind::Underline) {
+                self.buffer.push_str(&tag);
+                self.resolve_speculation(SpeculationKind::Underline, "<u>", "</u>", out);
+            } else if tag == "<sup>" {
+                self.start_speculation(SpeculationKind::Superscript);
+                self.buffer.push_str(&tag);
+                self.flush_text(out);
+            } else if tag == "</sup>" && self.has_speculation(SpeculationKind::Superscript) {
+                self.buffer.push_str(&tag);
+                self.resolve_speculation(SpeculationKind::Superscript, "<sup>", "</sup>", out);
+            } else if tag == "<sub>" {
+                self.start_speculation(SpeculationKind::Subscript);
+                self.buffer.push_str(&tag);
+                self.flush_text(out);
+            } else if tag == "</sub>" && self.has_speculation(SpeculationKind::Subscript) {
+                self.buffer.push_str(&tag);
+                self.resolve_speculation(SpeculationKind::Subscript, "<sub>", "</sub>", out);
+            } else {
+                self.buffer.push_str(&tag);
+                self.flush_text(out);
+            }
+            self.state = State::NormalText;
+        }
+
+        false
+    }
+
     fn push_char(&mut self, c: char, out: &mut Vec<Action>) {
         let mut reprocess = true;
 
@@ -1271,77 +1390,8 @@ impl LlmMarkdownParser {
 
             match current_state {
                 State::NormalText =>
-                    if c == '`' {
-                        self.flush_text(out);
-                        self.state = State::CheckingBackticks {
-                            count: 1,
-                            is_line_start: self.at_line_start,
-                        };
-                    } else if c == '#' && !self.inline_only {
-                        self.flush_text(out);
-                        self.state = State::CheckingHeading {
-                            count: 1,
-                            is_line_start: self.at_line_start,
-                        };
-                    } else if c == '$' {
-                        self.flush_text(out);
-                        self.state = State::CheckingDollar {
-                            char_before: self.last_char,
-                        };
-                    } else if c == '\\' {
-                        self.flush_text(out);
-                        self.state = State::CheckingSlash;
-                    } else if c == '*' || c == '_' {
-                        self.flush_text(out);
-                        self.state = State::CheckingStar {
-                            count: 1,
-                            char_before: self.last_char,
-                            marker: c,
-                        };
-                    } else if c == '~' {
-                        self.flush_text(out);
-                        self.state = State::CheckingTilde {
-                            count: 1,
-                            char_before: self.last_char,
-                        };
-                    } else if c == '|' {
-                        self.flush_text(out);
-                        self.state = State::CheckingPipe {
-                            count: 1,
-                            char_before: self.last_char,
-                        };
-                    } else if c == '<' {
-                        self.flush_text(out);
-                        self.html_tag.clear();
-                        self.html_tag.push('<');
-                        self.state = State::ReadingHtmlTag;
-                    } else if c == '!' {
-                        self.flush_text(out);
-                        self.state = State::CheckingBang;
-                    } else if c == '[' {
-                        self.flush_text(out);
-                        self.start_speculation(SpeculationKind::LinkLabel);
-                        self.buffer.push('[');
-                        self.flush_text(out);
-                        self.state = State::NormalText;
-                    } else if c == ']' {
-                        let maybe_spec = self
-                            .speculations
-                            .iter()
-                            .rev()
-                            .find(|s| {
-                                s.kind == SpeculationKind::LinkLabel
-                                    || s.kind == SpeculationKind::ImageLabel
-                            })
-                            .map(|s| (s.kind, s.start_event_index));
-
-                        self.buffer.push(']');
-                        if let Some((kind, spec_idx)) = maybe_spec {
-                            self.flush_text(out);
-                            self.state = State::CheckingLinkUrl { kind, spec_idx };
-                        }
-                    } else {
-                        self.buffer.push(c);
+                    if self.on_normal_text(c, out) {
+                        reprocess = true;
                     },
 
                 State::CheckingBang =>
@@ -1384,67 +1434,10 @@ impl LlmMarkdownParser {
                         self.flush_text(out);
                     },
 
-                State::ReadingHtmlTag => {
-                    if c != '>' && (c.is_whitespace() || self.html_tag.len() >= MAX_HTML_TAG_LEN) {
-                        let tag = std::mem::take(&mut self.html_tag);
-                        self.buffer.push_str(&tag);
-                        self.flush_text(out);
-                        self.state = State::NormalText;
+                State::ReadingHtmlTag =>
+                    if self.on_reading_html_tag(c, out) {
                         reprocess = true;
-                        continue;
-                    }
-
-                    self.html_tag.push(c);
-                    if c == '>' {
-                        let tag = std::mem::take(&mut self.html_tag);
-                        if tag == "<u>" {
-                            self.start_speculation(SpeculationKind::Underline);
-                            self.buffer.push_str(&tag);
-                            self.flush_text(out);
-                        } else if tag == "</u>" && self.has_speculation(SpeculationKind::Underline)
-                        {
-                            self.buffer.push_str(&tag);
-                            self.resolve_speculation(
-                                SpeculationKind::Underline,
-                                "<u>",
-                                "</u>",
-                                out,
-                            );
-                        } else if tag == "<sup>" {
-                            self.start_speculation(SpeculationKind::Superscript);
-                            self.buffer.push_str(&tag);
-                            self.flush_text(out);
-                        } else if tag == "</sup>"
-                            && self.has_speculation(SpeculationKind::Superscript)
-                        {
-                            self.buffer.push_str(&tag);
-                            self.resolve_speculation(
-                                SpeculationKind::Superscript,
-                                "<sup>",
-                                "</sup>",
-                                out,
-                            );
-                        } else if tag == "<sub>" {
-                            self.start_speculation(SpeculationKind::Subscript);
-                            self.buffer.push_str(&tag);
-                            self.flush_text(out);
-                        } else if tag == "</sub>"
-                            && self.has_speculation(SpeculationKind::Subscript)
-                        {
-                            self.buffer.push_str(&tag);
-                            self.resolve_speculation(
-                                SpeculationKind::Subscript,
-                                "<sub>",
-                                "</sub>",
-                                out,
-                            );
-                        } else {
-                            self.buffer.push_str(&tag);
-                            self.flush_text(out);
-                        }
-                        self.state = State::NormalText;
-                    }
-                }
+                    },
 
                 State::CheckingStar {
                     count,
