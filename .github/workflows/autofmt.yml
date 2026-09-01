@@ -12,7 +12,7 @@ jobs:
       - run: cargo fmt
       - run: ruff format . || true
       - run: git diff > format.patch
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: format-patch
           path: format.patch
